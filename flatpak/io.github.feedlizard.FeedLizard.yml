@@ -1,0 +1,31 @@
+app-id: io.github.feedlizard.FeedLizard
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: feedlizard
+finish-args:
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --own-name=io.github.feedlizard.FeedLizard.Integration
+modules:
+  - name: feedlizard
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/feedlizard/cargo
+        FEEDLIZARD_SUPPORT_LIGHTNING_ADDRESS: youngerfox798@walletofsatoshi.com
+    build-commands:
+      - cargo --offline --locked build --release --package feedlizard-app
+      - install -Dm755 target/release/feedlizard /app/bin/feedlizard
+      - install -Dm644 data/io.github.feedlizard.FeedLizard.desktop /app/share/applications/io.github.feedlizard.FeedLizard.desktop
+      - install -Dm644 data/io.github.feedlizard.FeedLizard.metainfo.xml /app/share/metainfo/io.github.feedlizard.FeedLizard.metainfo.xml
+      - install -Dm644 data/io.github.feedlizard.FeedLizard.svg /app/share/icons/hicolor/scalable/apps/io.github.feedlizard.FeedLizard.svg
+    sources:
+      - cargo-sources.json
+      - type: dir
+        path: ..

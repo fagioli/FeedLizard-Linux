@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0"><body>
+  <outline text="News &amp; Analysis"><outline text="Technology">
+    <outline type="rss" text="BleepingComputer" xmlUrl="https://www.bleepingcomputer.com/feed/" htmlUrl="https://www.bleepingcomputer.com/" />
+    <outline type="atom" text="Atom Café" xmlUrl="https://example.com/atom.xml" />
+  </outline></outline>
+  <outline type="json" text="JSON Feed" xmlUrl="https://json.example/feed.json" />
+</body></opml>

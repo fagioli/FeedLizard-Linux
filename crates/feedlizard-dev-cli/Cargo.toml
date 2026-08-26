@@ -1,0 +1,14 @@
+[package]
+name = "feedlizard-dev-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MPL-2.0"
+publish = false
+
+[dependencies]
+feedlizard-core = { path = "../feedlizard-core" }
+feedlizard-network = { path = "../feedlizard-network" }
+feedlizard-refresh = { path = "../feedlizard-refresh" }
+feedlizard-storage = { path = "../feedlizard-storage" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

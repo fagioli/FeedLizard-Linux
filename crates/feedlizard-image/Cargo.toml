@@ -1,0 +1,15 @@
+[package]
+name = "feedlizard-image"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MPL-2.0"
+publish = false
+
+[dependencies]
+futures-util = "0.3.31"
+image = { version = "0.25.8", default-features = false, features = ["avif", "gif", "jpeg", "png", "webp"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["rustls-tls", "stream"] }
+sha2 = "0.10.9"
+tokio = { version = "1.47.1", features = ["fs", "time"] }
+url = "2.5.7"

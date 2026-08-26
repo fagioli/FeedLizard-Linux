@@ -1,0 +1,17 @@
+{
+  "protocol": "feedlizard-subscriptions-v1",
+  "event_kind": 78,
+  "grouping_tag": ["d", "feedlizard-subscriptions-v1"],
+  "default_visible": 5,
+  "same_key_for_all_snapshots": true,
+  "equal_timestamp_order": "event_id_ascending",
+  "snapshots": [
+    {"name": "oldest", "created_at": 1777000000, "feed_url": "https://one.example/feed", "relays": ["relay-a"]},
+    {"name": "older", "created_at": 1777000100, "feed_url": "https://two.example/feed", "relays": ["relay-a", "relay-b"]},
+    {"name": "middle", "created_at": 1777000200, "feed_url": "https://three.example/feed", "relays": ["relay-b"]},
+    {"name": "equal-a", "created_at": 1777000300, "feed_url": "https://four.example/feed", "relays": ["relay-a", "relay-c"]},
+    {"name": "equal-b", "created_at": 1777000300, "feed_url": "https://five.example/feed", "relays": ["relay-b", "relay-c"]},
+    {"name": "recent", "created_at": 1777000400, "feed_url": "https://six.example/feed", "relays": ["relay-c"]},
+    {"name": "latest", "created_at": 1777000500, "feed_url": "https://seven.example/feed", "relays": ["relay-a", "relay-b", "relay-c"]}
+  ]
+}

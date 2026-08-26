@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.feedlizard.bar",
+  "name": "FeedLizard",
+  "version": "0.1.0",
+  "author": "FeedLizard",
+  "license": "MPL-2.0",
+  "description": "Unread status and quick actions for FeedLizard Linux.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "FeedLizard.qml" },
+  "barWidget": {
+    "displayName": "FeedLizard",
+    "description": "FeedLizard unread count, folder summary, and quick actions.",
+    "category": "Communication",
+    "aliases": ["feedlizard", "rss", "feeds"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

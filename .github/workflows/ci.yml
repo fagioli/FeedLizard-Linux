@@ -1,0 +1,48 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    name: ${{ matrix.arch }} workspace
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: fedora:44
+    steps:
+      - name: Install system dependencies
+        run: dnf install -y git rust cargo gcc pkgconf-pkg-config gtk4-devel libadwaita-devel sqlite-devel dbus-devel
+      - uses: actions/checkout@v4
+      - name: Format
+        run: cargo fmt --check
+      - name: Test workspace
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Release build
+        run: cargo build --release --workspace
+
+  dependency-policy:
+    name: Dependency policy
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - name: Install tools
+        run: |
+          dnf install -y git rust cargo gcc cargo-deny
+          cargo install cargo-audit --locked
+      - uses: actions/checkout@v4
+      - run: cargo audit
+      - run: cargo deny check

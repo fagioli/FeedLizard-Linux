@@ -1,0 +1,5 @@
+# kind	input	expected
+normalized_url	HTTPS://Example.COM:443/feed/#section	https://example.com/feed
+feed_id	https://example.com/feed/	feed:v1:92236c4e4c1108e7c39ad52278919a1a54d079a9b76133b0ede5c7a2467e4a26
+article_guid	story-1	article:v1:810d63c3d817735b6a09dc2b06fed15823c95d7ceb007ef268cf2d6f1050cdbb
+feed_id	https://www.bleepingcomputer.com/feed/	feed:v1:c550f13a25b17b26fcdce9c39c9490ac5d66953e75b94abbea0413637e3ac4ff

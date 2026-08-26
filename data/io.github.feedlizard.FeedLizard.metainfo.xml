@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.feedlizard.FeedLizard</id>
+  <name>FeedLizard</name>
+  <summary>A fast, local-first feed reader</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+  <description>
+    <p>FeedLizard is a native RSS, Atom, and JSON Feed reader built for Linux. It keeps subscriptions and reading state locally, works offline, and requires no account.</p>
+    <p>Browse unread, starred, feed, and folder views; search your library; manage OPML subscriptions; and read articles using carefully typeset Scroll and Pages modes.</p>
+  </description>
+  <launchable type="desktop-id">io.github.feedlizard.FeedLizard.desktop</launchable>
+  <provides>
+    <binary>feedlizard</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-08-25">
+      <description><p>Initial Linux release-candidate development series.</p></description>
+    </release>
+  </releases>
+</component>

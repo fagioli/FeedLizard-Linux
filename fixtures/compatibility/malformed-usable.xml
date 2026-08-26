@@ -1,0 +1,6 @@
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+<channel><title><![CDATA[ Example &amp; Imperfect ]]></title><link>https://example.test/</link>
+<item><guid>same</guid><title><![CDATA[ <b>First</b> ]]></title><pubDate>not-a-date</pubDate><description><![CDATA[<p>Summary</p>]]></description><content:encoded><![CDATA[<p>Full</p><img src="/inline.jpg" width="900" height="500">]]></content:encoded><media:thumbnail url="/thumb.jpg" width="320" height="180"/><media:content url="/hero.jpg" width="1200" height="630" medium="image"/></item>
+<item><guid>same</guid><title>Duplicate refresh entry</title></item>
+<item><title></title><link>/relative</link></item>
+</channel></rss>

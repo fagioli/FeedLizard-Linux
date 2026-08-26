@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+import json
+import pathlib
+import py_compile
+import sys
+
+root = pathlib.Path(__file__).resolve().parent.parent
+manifest = json.loads((root / "manifest.json").read_text())
+assert manifest["schemaVersion"] == 1
+assert manifest["id"] == "io.github.feedlizard.bar"
+assert manifest["kinds"] == ["bar-widget"]
+assert manifest["entryPoints"]["barWidget"] == "FeedLizard.qml"
+assert (root / manifest["entryPoints"]["barWidget"]).is_file()
+
+helper = root / "bin" / "feedlizard-ipc"
+py_compile.compile(str(helper), doraise=True)
+source = helper.read_text()
+for method in ("OpenFeedLizard", "OpenUnread", "Refresh"):
+    assert method in source
+for forbidden in ("nsec", "sqlite3", "SELECT ", "subprocess.Popen", "shell=True"):
+    assert forbidden not in source
+
+qml = (root / "FeedLizardService.qml").read_text()
+assert "Timer {" not in qml
+assert "gdbus" not in qml
+assert "feedlizard-ipc" in qml
+assert "UnreadChanged" in qml
+assert "Qt.resolvedUrl" in qml
+
+print("FeedLizard Omarchy source checks passed")

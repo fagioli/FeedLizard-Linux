@@ -1,0 +1,43 @@
+name: Flatpak
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "data/**"
+      - "flatpak/**"
+      - ".github/workflows/flatpak.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: ${{ matrix.arch }} bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: flatpak/io.github.feedlizard.FeedLizard.yml
+          bundle: FeedLizard-${{ matrix.arch }}.flatpak
+          artifact-name: FeedLizard-${{ matrix.arch }}.flatpak
+          arch: ${{ matrix.arch }}
+          cache-key: feedlizard-flatpak-${{ matrix.arch }}-${{ github.sha }}
+          verbose: true

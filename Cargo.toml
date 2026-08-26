@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/feedlizard-core",
+    "crates/feedlizard-storage",
+    "crates/feedlizard-network",
+    "crates/feedlizard-nostr-backup",
+    "crates/feedlizard-reader",
+    "crates/feedlizard-image",
+    "crates/feedlizard-integration",
+    "crates/feedlizard-refresh",
+    "crates/feedlizard-app",
+    "crates/feedlizard-dev-cli",
+]
+resolver = "2"

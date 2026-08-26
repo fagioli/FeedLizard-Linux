@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Example &amp; News</title>
+    <link>https://example.com/</link>
+    <description>Compatibility fixture</description>
+    <item>
+      <guid>story-1</guid>
+      <title>First story</title>
+      <link>https://example.com/first</link>
+      <dc:creator>Ada Lovelace</dc:creator>
+      <pubDate>Tue, 25 Aug 2026 12:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>story-untitled</guid>
+      <link>https://example.com/untitled</link>
+    </item>
+  </channel>
+</rss>

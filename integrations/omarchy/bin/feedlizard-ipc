@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Narrow host-side adapter for FeedLizard's session D-Bus interface."""
+
+import ast
+import subprocess
+import sys
+
+SERVICE = "io.github.feedlizard.FeedLizard.Integration"
+PATH = "/io/github/feedlizard/FeedLizard/Integration"
+INTERFACE = "io.github.feedlizard.FeedLizard.Integration1"
+ALLOWED = {"OpenFeedLizard", "OpenUnread", "Refresh"}
+
+
+def gdbus(*arguments: str, capture: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["gdbus", *arguments],
+        check=False,
+        capture_output=capture,
+        text=True,
+        timeout=None,
+    )
+
+
+def state() -> int:
+    result = gdbus(
+        "call", "--session", "--dest", SERVICE, "--object-path", PATH,
+        "--method", f"{INTERFACE}.GetUnreadState",
+    )
+    if result.returncode != 0:
+        return result.returncode
+    try:
+        value = ast.literal_eval(result.stdout.strip())
+        if not isinstance(value, tuple) or len(value) != 1 or not isinstance(value[0], str):
+            return 2
+        print(value[0])
+        return 0
+    except (SyntaxError, ValueError):
+        return 2
+
+
+def call(method: str) -> int:
+    if method not in ALLOWED:
+        return 2
+    return gdbus(
+        "call", "--session", "--dest", SERVICE, "--object-path", PATH,
+        "--method", f"{INTERFACE}.{method}", capture=False,
+    ).returncode
+
+
+def monitor() -> int:
+    return gdbus(
+        "monitor", "--session", "--dest", SERVICE, "--object-path", PATH,
+        capture=False,
+    ).returncode
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["state"]:
+        raise SystemExit(state())
+    if len(sys.argv) == 3 and sys.argv[1] == "call":
+        raise SystemExit(call(sys.argv[2]))
+    if sys.argv[1:] == ["monitor"]:
+        raise SystemExit(monitor())
+    raise SystemExit(2)

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Atom</title>
+  <link href="https://example.net/" rel="alternate" />
+  <link href="https://example.net/feed.xml" rel="self" type="application/atom+xml" />
+  <entry>
+    <id>urn:uuid:story-2</id>
+    <title>Second story</title>
+    <link href="https://example.net/second" rel="alternate" />
+    <author><name>Grace Hopper</name></author>
+    <published>2026-08-25T13:00:00Z</published>
+  </entry>
+</feed>

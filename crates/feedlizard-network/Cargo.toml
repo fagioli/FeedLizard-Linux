@@ -1,0 +1,19 @@
+[package]
+name = "feedlizard-network"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MPL-2.0"
+publish = false
+
+[dependencies]
+feedlizard-core = { path = "../feedlizard-core" }
+futures-util = "0.3"
+httpdate = "1"
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "rustls-tls", "stream"] }
+scraper = "0.23"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

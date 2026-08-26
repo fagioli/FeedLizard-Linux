@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Field Notes</title>
+    <link>https://example.org/</link>
+    <description>Synthetic visual-validation content</description>
+    <item>
+      <guid>reader-visual-1</guid>
+      <title>A quiet morning with open standards</title>
+      <link>https://example.org/field-notes/open-standards</link>
+      <author>Editorial Desk</author>
+      <pubDate>Tue, 25 Aug 2026 14:00:00 +0000</pubDate>
+      <description>A synthetic article used to validate FeedLizard's reading experience.</description>
+      <content:encoded><![CDATA[
+        <h2>Software that belongs to its reader</h2>
+        <p>A good feed reader should disappear into the rhythm of reading. Subscriptions remain available without an account, articles open from local storage, and the library stays useful when the network does not.</p>
+        <p>Open formats matter because they let a reading list travel between applications. OPML provides subscription portability, while RSS, Atom, and JSON Feed keep publishing independent of any single platform.</p>
+        <blockquote>Calm software earns trust through predictable behavior.</blockquote>
+        <h3>Designed for the desktop</h3>
+        <p>Keyboard navigation, clear focus, responsive panes, and careful typography turn ordinary feed management into a comfortable daily tool. Native controls also respect system appearance, accessibility preferences, and input methods.</p>
+        <ul><li>Local-first storage</li><li>Deterministic identity</li><li>Portable subscriptions</li><li>No telemetry by default</li></ul>
+        <p>The result is intentionally straightforward: the reader owns the library, the application does its work quietly, and every important operation remains understandable.</p>
+      ]]></content:encoded>
+    </item>
+  </channel>
+</rss>
