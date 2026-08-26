@@ -19,6 +19,8 @@ before production use. Fedora aarch64 is the current native development and
 runtime-validation platform. The source and CI target both aarch64 and x86-64;
 x86-64 desktop runtime validation remains required before Linux 1.0.
 
+![FeedLizard Library, Unread, and Reader panes](docs/screenshots/feedlizard-library.png)
+
 ## Optional encrypted Nostr backup
 
 FeedLizard can manually back up subscriptions, folders, and custom feed names
@@ -171,7 +173,7 @@ FeedLizard requires Rust 1.92, GTK 4.22, and libadwaita 1.9. On Fedora 44,
 install the development toolchain and libraries:
 
 ```sh
-sudo dnf install rust cargo gcc pkgconf-pkg-config gtk4-devel \
+sudo dnf install rust cargo rustfmt clippy gcc pkgconf-pkg-config gtk4-devel \
   libadwaita-devel sqlite-devel dbus-devel
 ```
 
