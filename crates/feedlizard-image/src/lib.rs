@@ -2,6 +2,7 @@ use futures_util::StreamExt;
 use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::{error::Error, fmt, path::PathBuf, time::Duration};
 use url::Url;
 
@@ -210,7 +211,13 @@ fn cover(image: DynamicImage, width: u32, height: u32) -> DynamicImage {
 }
 
 fn cache_name(url: &str) -> String {
-    format!("{:x}.image", Sha256::digest(url.as_bytes()))
+    let digest = Sha256::digest(url.as_bytes());
+    let mut name = String::with_capacity(digest.len() * 2 + ".image".len());
+    for byte in digest {
+        write!(&mut name, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    name.push_str(".image");
+    name
 }
 
 #[cfg(test)]
@@ -238,7 +245,10 @@ mod tests {
     #[test]
     fn cache_names_are_stable_and_hide_urls() {
         let name = cache_name("https://example.com/private-topic.jpg");
-        assert_eq!(name.len(), 70);
+        assert_eq!(
+            name,
+            "8855b87882ce33fcaa6edb7b52e2d10e6a992c9fc4d2d27ce26b0cc57a71a23b.image"
+        );
         assert!(!name.contains("private"));
     }
 
