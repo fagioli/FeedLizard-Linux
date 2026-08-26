@@ -7,7 +7,7 @@ license = "MPL-2.0"
 publish = false
 
 [dependencies]
-base64 = "0.22.1"
+base64 = "0.23.1"
 flate2 = "1.1.2"
 feedlizard-core = { path = "../feedlizard-core" }
 futures = "0.3.31"
