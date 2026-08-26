@@ -11,7 +11,7 @@ feedlizard-core = { path = "../feedlizard-core" }
 futures-util = "0.3"
 httpdate = "1"
 reqwest = { version = "0.12", default-features = false, features = ["gzip", "rustls-tls", "stream"] }
-scraper = "0.23"
+scraper = "0.27"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2"
 
