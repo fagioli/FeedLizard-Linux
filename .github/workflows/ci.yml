@@ -23,7 +23,7 @@ jobs:
     container: fedora:44
     steps:
       - name: Install system dependencies
-        run: dnf install -y git rust cargo gcc pkgconf-pkg-config gtk4-devel libadwaita-devel sqlite-devel dbus-devel
+        run: dnf install -y git rust cargo rustfmt clippy gcc pkgconf-pkg-config gtk4-devel libadwaita-devel sqlite-devel dbus-devel
       - uses: actions/checkout@v4
       - name: Format
         run: cargo fmt --check
