@@ -21,6 +21,8 @@ pub struct FeedRecord {
     pub custom_name: Option<String>,
     pub format: FeedFormat,
     pub folder_id: Option<i64>,
+    pub favicon_url: Option<String>,
+    pub feed_image_url: Option<String>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub last_refresh_attempt_at: Option<i64>,
@@ -46,9 +48,11 @@ pub struct ArticleListItem {
     pub stable_id: String,
     pub feed_stable_id: String,
     pub feed_name: String,
+    pub article_url: Option<String>,
     pub title: String,
     pub summary: Option<String>,
     pub published_at: Option<i64>,
+    pub updated_at: Option<i64>,
     pub thumbnail_url: Option<String>,
     pub is_unread: bool,
     pub is_starred: bool,
@@ -67,6 +71,7 @@ pub struct FullArticle {
     pub summary: Option<String>,
     pub content: Option<String>,
     pub published_at: Option<i64>,
+    pub inserted_at: i64,
     pub updated_at: Option<i64>,
     pub image_url: Option<String>,
     pub image_source: Option<String>,
@@ -87,6 +92,7 @@ pub enum ArticleScope<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageCursor {
+    pub before_is_undated: bool,
     pub before_timestamp: i64,
     pub before_id: String,
 }

@@ -193,6 +193,40 @@ fn read_and_star_are_independent_and_mark_all_is_set_based() {
     );
     assert_eq!(library.unread_count(ArticleScope::Library).unwrap(), 0);
     assert!(library.full_article(&article.stable_id).unwrap().is_starred);
+    assert_eq!(library.unstar_all(105).unwrap(), 1);
+    assert!(!library.full_article(&article.stable_id).unwrap().is_starred);
+    assert_eq!(library.unstar_all(106).unwrap(), 0);
+}
+
+#[test]
+fn article_order_uses_updated_time_and_paginates_undated_items_last() {
+    let path = DatabasePath::new("date-order");
+    let mut library = Library::open(&path).unwrap();
+    let document = r#"{
+        "version":"https://jsonfeed.org/version/1.1",
+        "title":"Dates",
+        "items":[
+          {"id":"published","title":"Published","date_published":"2026-07-01T00:00:00Z"},
+          {"id":"updated","title":"Updated","date_modified":"2026-08-01T00:00:00Z"},
+          {"id":"undated","title":"Undated"}
+        ]
+    }"#;
+    library
+        .ingest_document("https://dates.example/feed.json", document, 2_000_000_000)
+        .unwrap();
+
+    let first = library
+        .article_page(ArticleScope::Library, 1, None)
+        .unwrap();
+    assert_eq!(first.items[0].title, "Updated");
+    let second = library
+        .article_page(ArticleScope::Library, 1, first.next.as_ref())
+        .unwrap();
+    assert_eq!(second.items[0].title, "Published");
+    let third = library
+        .article_page(ArticleScope::Library, 1, second.next.as_ref())
+        .unwrap();
+    assert_eq!(third.items[0].title, "Undated");
 }
 
 #[test]

@@ -83,6 +83,36 @@ pub enum AddFeedResult {
     Candidates(DiscoveryResult),
 }
 
+/// Applies the desktop Add Feed policy to a user-entered address.
+///
+/// Explicit HTTP and HTTPS URLs are preserved. A bare host or host/path is
+/// treated as HTTPS so users can enter addresses such as `example.com`.
+pub fn normalize_user_entered_url(value: &str) -> Result<String, RefreshError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(RefreshError::InvalidUrl);
+    }
+
+    if let Ok(url) = Url::parse(value) {
+        if matches!(url.scheme(), "http" | "https") && url.host_str().is_some() {
+            return Ok(value.to_owned());
+        }
+
+        // `Url` interprets `localhost:8080` as a URL with a `localhost`
+        // scheme, although it is a useful bare address for a desktop reader.
+        if url.scheme() != "localhost" {
+            return Err(RefreshError::InvalidUrl);
+        }
+    }
+
+    let candidate = format!("https://{value}");
+    let url = Url::parse(&candidate).map_err(|_| RefreshError::InvalidUrl)?;
+    if url.host_str().is_none() {
+        return Err(RefreshError::InvalidUrl);
+    }
+    Ok(candidate)
+}
+
 #[derive(Debug)]
 pub enum RefreshError {
     Network(NetworkError),
@@ -188,39 +218,60 @@ impl RefreshCoordinator {
         url: &str,
         cancel: &CancellationToken,
     ) -> Result<AddFeedResult, RefreshError> {
-        let parsed_url = Url::parse(url).map_err(|_| RefreshError::InvalidUrl)?;
-        if !matches!(parsed_url.scheme(), "http" | "https") {
-            return Err(RefreshError::InvalidUrl);
-        }
+        let url = normalize_user_entered_url(url)?;
         match self
             .client
-            .fetch_feed(url, &CacheValidators::default(), cancel)
+            .fetch_feed(&url, &CacheValidators::default(), cancel)
             .await
         {
             Ok(FetchOutcome::Modified(response)) => {
                 parser::parse_with_source(&response.body, &response.final_url)
                     .map_err(|e| RefreshError::Parse(e.to_string()))?;
                 let metadata = success_metadata(&response, now());
-                let ingest = library.ingest_fetched_document(
-                    url,
+                let mut ingest = library.ingest_fetched_document(
+                    &url,
                     &response.final_url,
                     &response.body,
                     metadata.attempted_at,
                     Some(&metadata),
                 )?;
-                Ok(AddFeedResult::Added {
-                    feed_id: feedlizard_core::identity::feed_id(url),
-                    ingest,
-                })
+                let feed_id = feedlizard_core::identity::feed_id(&url);
+                let cutoff = metadata.attempted_at.saturating_sub(30 * 24 * 60 * 60);
+                let expired = library.cleanup_feed_retention(&feed_id, cutoff)?;
+                ingest.inserted = ingest.inserted.saturating_sub(expired);
+                Ok(AddFeedResult::Added { feed_id, ingest })
             }
             Ok(FetchOutcome::NotModified(_)) => Err(RefreshError::Parse(
                 "unexpected 304 for new subscription".into(),
             )),
             Err(error) if error.kind == NetworkErrorKind::UnsupportedContent => Ok(
-                AddFeedResult::Candidates(self.client.discover(url, cancel).await?),
+                AddFeedResult::Candidates(self.client.discover(&url, cancel).await?),
             ),
             Err(error) => Err(error.into()),
         }
+    }
+
+    pub async fn discover_article_images(
+        &self,
+        candidates: Vec<(String, String)>,
+        cancel: &CancellationToken,
+    ) -> Vec<(String, String)> {
+        futures_util::stream::iter(candidates.into_iter().map(|(article_id, url)| {
+            let client = self.client.clone();
+            let cancel = cancel.clone();
+            async move {
+                client
+                    .discover_article_image(&url, &cancel)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|image| (article_id, image))
+            }
+        }))
+        .buffer_unordered(4)
+        .filter_map(|value| async move { value })
+        .collect()
+        .await
     }
 
     pub async fn discover(
@@ -465,5 +516,46 @@ fn now() -> i64 {
 async fn wait_cancelled(token: &CancellationToken) {
     while !token.is_cancelled() {
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_user_entered_url;
+
+    #[test]
+    fn add_feed_assumes_https_for_bare_addresses() {
+        assert_eq!(
+            normalize_user_entered_url("nerds.xyz").unwrap(),
+            "https://nerds.xyz"
+        );
+        assert_eq!(
+            normalize_user_entered_url(" news.example/feed.xml ").unwrap(),
+            "https://news.example/feed.xml"
+        );
+        assert_eq!(
+            normalize_user_entered_url("localhost:8080/feed").unwrap(),
+            "https://localhost:8080/feed"
+        );
+    }
+
+    #[test]
+    fn add_feed_preserves_explicit_web_urls() {
+        assert_eq!(
+            normalize_user_entered_url("http://example.com/feed").unwrap(),
+            "http://example.com/feed"
+        );
+        assert_eq!(
+            normalize_user_entered_url("https://example.com/feed").unwrap(),
+            "https://example.com/feed"
+        );
+    }
+
+    #[test]
+    fn add_feed_rejects_empty_and_unsupported_schemes() {
+        assert!(normalize_user_entered_url(" ").is_err());
+        assert!(normalize_user_entered_url("file:///tmp/feed.xml").is_err());
+        assert!(normalize_user_entered_url("javascript:alert(1)").is_err());
+        assert!(normalize_user_entered_url("data:text/plain,feed").is_err());
     }
 }

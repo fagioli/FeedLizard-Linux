@@ -173,7 +173,7 @@ impl Library {
     }
 
     pub fn list_feeds(&self) -> Result<Vec<FeedRecord>, StorageError> {
-        let mut statement = self.connection.prepare("SELECT stable_id,normalized_url,fetch_url,effective_fetch_url,site_url,display_name,publisher_name,custom_name,format,folder_id,etag,last_modified,last_refresh_attempt_at,last_refresh_at,last_http_status,consecutive_failures,last_refresh_status FROM feeds ORDER BY display_name COLLATE NOCASE,stable_id").map_err(sqlite)?;
+        let mut statement = self.connection.prepare("SELECT stable_id,normalized_url,fetch_url,effective_fetch_url,site_url,display_name,publisher_name,custom_name,format,folder_id,favicon_url,feed_image_url,etag,last_modified,last_refresh_attempt_at,last_refresh_at,last_http_status,consecutive_failures,last_refresh_status FROM feeds ORDER BY display_name COLLATE NOCASE,stable_id").map_err(sqlite)?;
         statement
             .query_map([], map_feed)
             .map_err(sqlite)?
@@ -183,10 +183,28 @@ impl Library {
 
     pub fn feed(&self, stable_id: &str) -> Result<FeedRecord, StorageError> {
         self.connection
-            .query_row("SELECT stable_id,normalized_url,fetch_url,effective_fetch_url,site_url,display_name,publisher_name,custom_name,format,folder_id,etag,last_modified,last_refresh_attempt_at,last_refresh_at,last_http_status,consecutive_failures,last_refresh_status FROM feeds WHERE stable_id=?1", [stable_id], map_feed)
+            .query_row("SELECT stable_id,normalized_url,fetch_url,effective_fetch_url,site_url,display_name,publisher_name,custom_name,format,folder_id,favicon_url,feed_image_url,etag,last_modified,last_refresh_attempt_at,last_refresh_at,last_http_status,consecutive_failures,last_refresh_status FROM feeds WHERE stable_id=?1", [stable_id], map_feed)
             .optional()
             .map_err(sqlite)?
             .ok_or(StorageError::NotFound("feed"))
+    }
+
+    pub fn set_feed_favicon(
+        &mut self,
+        stable_id: &str,
+        favicon_url: &str,
+    ) -> Result<(), StorageError> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE feeds SET favicon_url=?2, modified_at=strftime('%s','now') WHERE stable_id=?1",
+                rusqlite::params![stable_id, favicon_url],
+            )
+            .map_err(sqlite)?;
+        if changed == 0 {
+            return Err(StorageError::Constraint("feed does not exist".into()));
+        }
+        Ok(())
     }
 
     pub fn record_refresh(
@@ -310,6 +328,18 @@ impl Library {
         Ok(())
     }
 
+    pub fn unstar_all(&mut self, now: i64) -> Result<usize, StorageError> {
+        let transaction = self.connection.transaction().map_err(sqlite)?;
+        let changed = transaction
+            .execute(
+                "UPDATE articles SET is_starred=0,modified_at=?1 WHERE is_starred=1",
+                [now],
+            )
+            .map_err(sqlite)?;
+        transaction.commit().map_err(sqlite)?;
+        Ok(changed)
+    }
+
     pub fn mark_all_read(
         &mut self,
         scope: ArticleScope<'_>,
@@ -410,6 +440,29 @@ impl Library {
         Ok(deleted)
     }
 
+    pub fn cleanup_feed_retention(
+        &mut self,
+        feed_id: &str,
+        cutoff: i64,
+    ) -> Result<usize, StorageError> {
+        let transaction = self.connection.transaction().map_err(sqlite)?;
+        let selection = "SELECT rowid FROM articles WHERE feed_stable_id=?1 AND is_starred=0 AND retention_at < ?2";
+        transaction
+            .execute(
+                &format!("DELETE FROM article_fts WHERE rowid IN ({selection})"),
+                params![feed_id, cutoff],
+            )
+            .map_err(sqlite)?;
+        let deleted = transaction
+            .execute(
+                &format!("DELETE FROM articles WHERE rowid IN ({selection})"),
+                params![feed_id, cutoff],
+            )
+            .map_err(sqlite)?;
+        transaction.commit().map_err(sqlite)?;
+        Ok(deleted)
+    }
+
     pub fn article_page(
         &self,
         scope: ArticleScope<'_>,
@@ -433,14 +486,16 @@ impl Library {
             }
         }
         if let Some(cursor) = cursor {
-            where_sql.push_str(" AND (COALESCE(a.published_at,a.inserted_at) < ? OR (COALESCE(a.published_at,a.inserted_at)=? AND a.stable_id < ?))");
+            where_sql.push_str(" AND ((a.published_at IS NULL AND a.updated_at IS NULL) > ? OR ((a.published_at IS NULL AND a.updated_at IS NULL)=? AND (COALESCE(a.published_at,a.updated_at,a.inserted_at) < ? OR (COALESCE(a.published_at,a.updated_at,a.inserted_at)=? AND a.stable_id < ?))))");
+            values.push(cursor.before_is_undated.into());
+            values.push(cursor.before_is_undated.into());
             values.push(cursor.before_timestamp.into());
             values.push(cursor.before_timestamp.into());
             values.push(cursor.before_id.clone().into());
         }
         values.push(((limit + 1) as i64).into());
         let sql = format!(
-            "SELECT a.stable_id,a.feed_stable_id,f.display_name,a.title,a.summary,a.published_at,a.image_url,a.is_read,a.is_starred,COALESCE(a.published_at,a.inserted_at) FROM articles a JOIN feeds f ON f.stable_id=a.feed_stable_id{where_sql} ORDER BY COALESCE(a.published_at,a.inserted_at) DESC,a.stable_id DESC LIMIT ?"
+            "SELECT a.stable_id,a.feed_stable_id,f.display_name,a.url,a.title,a.summary,a.published_at,a.updated_at,a.image_url,a.is_read,a.is_starred,COALESCE(a.published_at,a.updated_at,a.inserted_at) FROM articles a JOIN feeds f ON f.stable_id=a.feed_stable_id{where_sql} ORDER BY (a.published_at IS NULL AND a.updated_at IS NULL),COALESCE(a.published_at,a.updated_at,a.inserted_at) DESC,a.stable_id DESC LIMIT ?"
         );
         let mut statement = self.connection.prepare(&sql).map_err(sqlite)?;
         let mut items = statement
@@ -455,6 +510,7 @@ impl Library {
         let next = has_more
             .then(|| {
                 items.last().map(|item| PageCursor {
+                    before_is_undated: item.published_at.is_none() && item.updated_at.is_none(),
                     before_timestamp: item.sort_timestamp,
                     before_id: item.stable_id.clone(),
                 })
@@ -467,7 +523,7 @@ impl Library {
         let Some(query) = safe_fts_query(query) else {
             return Ok(Vec::new());
         };
-        let mut statement = self.connection.prepare("SELECT a.stable_id,a.feed_stable_id,f.display_name,a.title,a.summary,a.published_at,a.image_url,a.is_read,a.is_starred,COALESCE(a.published_at,a.inserted_at) FROM article_fts x JOIN articles a ON a.stable_id=x.article_id JOIN feeds f ON f.stable_id=a.feed_stable_id WHERE article_fts MATCH ?1 ORDER BY bm25(article_fts),COALESCE(a.published_at,a.inserted_at) DESC,a.stable_id DESC LIMIT ?2").map_err(|error| StorageError::Search(error.to_string()))?;
+        let mut statement = self.connection.prepare("SELECT a.stable_id,a.feed_stable_id,f.display_name,a.url,a.title,a.summary,a.published_at,a.updated_at,a.image_url,a.is_read,a.is_starred,COALESCE(a.published_at,a.updated_at,a.inserted_at) FROM article_fts x JOIN articles a ON a.stable_id=x.article_id JOIN feeds f ON f.stable_id=a.feed_stable_id WHERE article_fts MATCH ?1 ORDER BY bm25(article_fts),(a.published_at IS NULL AND a.updated_at IS NULL),COALESCE(a.published_at,a.updated_at,a.inserted_at) DESC,a.stable_id DESC LIMIT ?2").map_err(|error| StorageError::Search(error.to_string()))?;
         statement
             .query_map(params![query, limit.clamp(1, 200) as i64], map_projection)
             .map_err(|error| StorageError::Search(error.to_string()))?
@@ -476,7 +532,17 @@ impl Library {
     }
 
     pub fn full_article(&self, stable_id: &str) -> Result<FullArticle, StorageError> {
-        self.connection.query_row("SELECT a.stable_id,a.feed_stable_id,f.display_name,a.provider_id,a.url,a.title,a.author,a.summary,a.content,a.published_at,a.updated_at,a.image_url,a.image_source,a.enclosure_url,a.enclosure_type,a.is_read,a.is_starred FROM articles a JOIN feeds f ON f.stable_id=a.feed_stable_id WHERE a.stable_id=?1", [stable_id], map_full_article).optional().map_err(sqlite)?.ok_or(StorageError::NotFound("article"))
+        self.connection.query_row("SELECT a.stable_id,a.feed_stable_id,f.display_name,a.provider_id,a.url,a.title,a.author,a.summary,a.content,a.published_at,a.updated_at,a.image_url,a.image_source,a.enclosure_url,a.enclosure_type,a.is_read,a.is_starred,a.inserted_at FROM articles a JOIN feeds f ON f.stable_id=a.feed_stable_id WHERE a.stable_id=?1", [stable_id], map_full_article).optional().map_err(sqlite)?.ok_or(StorageError::NotFound("article"))
+    }
+
+    pub fn set_article_image(&self, stable_id: &str, image_url: &str) -> Result<(), StorageError> {
+        self.connection
+            .execute(
+                "UPDATE articles SET image_url=?1,image_source='open-graph' WHERE stable_id=?2 AND image_url IS NULL",
+                params![image_url, stable_id],
+            )
+            .map_err(sqlite)?;
+        Ok(())
     }
 
     pub fn import_opml(&mut self, input: &str, now: i64) -> Result<ImportStats, StorageError> {
@@ -765,15 +831,17 @@ fn map_feed(row: &Row<'_>) -> rusqlite::Result<FeedRecord> {
         custom_name: row.get(7)?,
         format: parse_format(row.get(8)?)?,
         folder_id: row.get(9)?,
-        etag: row.get(10)?,
-        last_modified: row.get(11)?,
-        last_refresh_attempt_at: row.get(12)?,
-        last_refresh_at: row.get(13)?,
+        favicon_url: row.get(10)?,
+        feed_image_url: row.get(11)?,
+        etag: row.get(12)?,
+        last_modified: row.get(13)?,
+        last_refresh_attempt_at: row.get(14)?,
+        last_refresh_at: row.get(15)?,
         last_http_status: row
-            .get::<_, Option<i64>>(14)?
+            .get::<_, Option<i64>>(16)?
             .and_then(|value| u16::try_from(value).ok()),
-        consecutive_failures: row.get::<_, i64>(15)?.try_into().unwrap_or(u32::MAX),
-        last_refresh_status: row.get(16)?,
+        consecutive_failures: row.get::<_, i64>(17)?.try_into().unwrap_or(u32::MAX),
+        last_refresh_status: row.get(18)?,
     })
 }
 fn map_projection(row: &Row<'_>) -> rusqlite::Result<ArticleListItem> {
@@ -781,13 +849,15 @@ fn map_projection(row: &Row<'_>) -> rusqlite::Result<ArticleListItem> {
         stable_id: row.get(0)?,
         feed_stable_id: row.get(1)?,
         feed_name: row.get(2)?,
-        title: row.get(3)?,
-        summary: row.get(4)?,
-        published_at: row.get(5)?,
-        thumbnail_url: row.get(6)?,
-        is_unread: !row.get::<_, bool>(7)?,
-        is_starred: row.get(8)?,
-        sort_timestamp: row.get(9)?,
+        article_url: row.get(3)?,
+        title: row.get(4)?,
+        summary: row.get(5)?,
+        published_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        thumbnail_url: row.get(8)?,
+        is_unread: !row.get::<_, bool>(9)?,
+        is_starred: row.get(10)?,
+        sort_timestamp: row.get(11)?,
     })
 }
 fn map_full_article(row: &Row<'_>) -> rusqlite::Result<FullArticle> {
@@ -802,6 +872,7 @@ fn map_full_article(row: &Row<'_>) -> rusqlite::Result<FullArticle> {
         summary: row.get(7)?,
         content: row.get(8)?,
         published_at: row.get(9)?,
+        inserted_at: row.get(17)?,
         updated_at: row.get(10)?,
         image_url: row.get(11)?,
         image_source: row.get(12)?,

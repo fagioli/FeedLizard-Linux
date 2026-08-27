@@ -38,6 +38,7 @@ pub enum Command {
     OpenArticle(String),
     SetRead { id: String, read: bool },
     SetStarred { id: String, starred: bool },
+    UnstarAll,
     MarkAllRead(OwnedScope),
     ImportOpml(PathBuf),
     ExportOpml(PathBuf),
@@ -67,6 +68,15 @@ pub enum Event {
         items: Vec<ArticleListItem>,
     },
     Article(Box<FullArticle>),
+    ReadChanged {
+        id: String,
+        read: bool,
+    },
+    StarredChanged {
+        id: String,
+        starred: bool,
+    },
+    FeedRemoved,
     MutationComplete,
     Notice(String),
     Error(String),
@@ -163,13 +173,23 @@ fn handle(library: &mut Library, command: Command) -> Result<Event, String> {
             library
                 .mark_article_read(&id, read, unix_now())
                 .map_err(|error| error.to_string())?;
-            Ok(Event::MutationComplete)
+            Ok(Event::ReadChanged { id, read })
         }
         Command::SetStarred { id, starred } => {
             library
                 .set_article_starred(&id, starred, unix_now())
                 .map_err(|error| error.to_string())?;
-            Ok(Event::MutationComplete)
+            Ok(Event::StarredChanged { id, starred })
+        }
+        Command::UnstarAll => {
+            let changed = library
+                .unstar_all(unix_now())
+                .map_err(|error| error.to_string())?;
+            Ok(Event::Notice(format!(
+                "Removed {} star{}",
+                changed,
+                if changed == 1 { "" } else { "s" }
+            )))
         }
         Command::MarkAllRead(scope) => {
             library
@@ -227,7 +247,7 @@ fn handle(library: &mut Library, command: Command) -> Result<Event, String> {
             library
                 .remove_subscription(&id)
                 .map_err(|error| error.to_string())?;
-            Ok(Event::Notice("Feed removed".into()))
+            Ok(Event::FeedRemoved)
         }
         Command::MoveFeed { id, folder_id } => {
             library

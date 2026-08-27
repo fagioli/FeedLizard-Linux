@@ -11,6 +11,10 @@ Omarchy plugin source lives at [`integrations/omarchy`](integrations/omarchy);
 it is never installed or enabled silently and is not required on other
 distributions.
 
+> **Beta software:** FeedLizard Linux is currently in the 0.9 beta series.
+> Expect bugs and report behavior that does not work as expected. Version 1.0
+> will be the first stable release.
+
 The graphical application is a 1.0 release-candidate work in progress. Its adaptive
 three-pane interface, feed management, refresh, offline search, bounded image
 pipeline, Scroll reader, and native Pages prototype are implemented. Human
@@ -192,6 +196,18 @@ Official builds may configure one at compile time with
 `FEEDLIZARD_SUPPORT_LIGHTNING_ADDRESS`.
 
 ## Flatpak
+
+Beta releases will provide two installation paths:
+
+- architecture-specific standalone `.flatpak` bundles attached to an intentional
+  prerelease on GitHub;
+- an official signed Flatpak repository for normal `flatpak update` behavior
+  once its production signing credential has been created and protected.
+
+Installing a standalone bundle does not require Rust or GTK development tools,
+but Flatpak may still download the matching GNOME runtime when it is not already
+installed. See [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) for the release,
+signing, channel, rollback, and repository-maintenance design.
 
 The manifest uses the GNOME 50 runtime and the standard Freedesktop Rust SDK
 extension. Generate offline Cargo sources whenever `Cargo.lock` changes, then

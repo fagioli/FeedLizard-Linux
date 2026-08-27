@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "feedlizard-app"
-version = "0.1.0"
+version = "0.9.0-beta.2"
 dependencies = [
  "chrono",
  "feedlizard-core",
@@ -874,6 +874,7 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "tokio",
+ "url",
 ]
 
 [[package]]

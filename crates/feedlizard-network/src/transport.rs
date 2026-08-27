@@ -156,6 +156,71 @@ impl HttpClient {
         }
     }
 
+    pub async fn discover_article_image(
+        &self,
+        url: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, NetworkError> {
+        match self
+            .fetch(
+                url,
+                FetchKind::DiscoveryPage,
+                &CacheValidators::default(),
+                cancel,
+            )
+            .await?
+        {
+            FetchOutcome::Modified(response) => Ok(discovery::article_image(
+                &response.final_url,
+                &response.body,
+            )),
+            FetchOutcome::NotModified(_) => Ok(None),
+        }
+    }
+
+    pub async fn discover_site_icon(
+        &self,
+        url: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, NetworkError> {
+        match self
+            .fetch(
+                url,
+                FetchKind::DiscoveryPage,
+                &CacheValidators::default(),
+                cancel,
+            )
+            .await?
+        {
+            FetchOutcome::Modified(response) => {
+                Ok(discovery::site_icon(&response.final_url, &response.body))
+            }
+            FetchOutcome::NotModified(_) => Ok(None),
+        }
+    }
+
+    pub async fn fetch_article_html(
+        &self,
+        url: &str,
+        cancel: &CancellationToken,
+    ) -> Result<FetchResponse, NetworkError> {
+        match self
+            .fetch(
+                url,
+                FetchKind::DiscoveryPage,
+                &CacheValidators::default(),
+                cancel,
+            )
+            .await?
+        {
+            FetchOutcome::Modified(response) => Ok(response),
+            FetchOutcome::NotModified(_) => Err(NetworkError::new(
+                NetworkErrorKind::InvalidResponse,
+                "unexpected 304 article response",
+            )),
+        }
+    }
+
     pub async fn fetch(
         &self,
         url: &str,

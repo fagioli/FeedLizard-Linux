@@ -12,3 +12,6 @@ members = [
     "crates/feedlizard-dev-cli",
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.9.0-beta.2"

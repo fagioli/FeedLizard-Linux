@@ -15,7 +15,7 @@ use feedlizard_storage::{ArticleListItem, FeedRecord, FolderRecord, FullArticle,
 use gtk::{gio, glib};
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
     sync::mpsc::Receiver,
@@ -43,17 +43,23 @@ struct View {
     outer: adw::NavigationSplitView,
     inner: adw::NavigationSplitView,
     sidebar_list: gtk::ListBox,
+    feed_list: gtk::ListBox,
     article_list: gtk::ListBox,
     article_title: adw::WindowTitle,
     empty: adw::StatusPage,
     article_scroller: gtk::ScrolledWindow,
+    reader_scroller: gtk::ScrolledWindow,
     reader_title: gtk::Label,
     reader_meta: gtk::Label,
     reader_content: gtk::Box,
+    reader_mode_stack: gtk::Stack,
     pages_deck: gtk::Stack,
     pages_indicator: gtk::Label,
     pages_previous: gtk::Button,
     pages_next: gtk::Button,
+    scroll_mode: gtk::ToggleButton,
+    pages_mode: gtk::ToggleButton,
+    book_view: gtk::Button,
     reader_star: gtk::ToggleButton,
     open_original: gtk::Button,
     search_bar: gtk::SearchBar,
@@ -68,17 +74,42 @@ struct View {
     network: NetworkWorker,
     nostr: NostrWorker,
     images: ImageWorker,
+    icons: ImageWorker,
     integration: Option<IntegrationHandle>,
     scope: RefCell<OwnedScope>,
+    unread_snapshot_dirty: Cell<bool>,
     article_ids: RefCell<Vec<String>>,
+    article_items: RefCell<Vec<ArticleListItem>>,
+    article_row_states: RefCell<HashMap<String, ArticleRowState>>,
+    image_enrichment_requested: RefCell<HashSet<String>>,
+    favicon_discovery_requested: RefCell<HashSet<String>>,
+    article_extraction_requested: RefCell<HashSet<String>>,
+    extracted_articles: RefCell<HashMap<String, Document>>,
     open_article: RefCell<Option<FullArticle>>,
     feeds: RefCell<Vec<FeedRecord>>,
     folders: RefCell<Vec<FolderRecord>>,
-    image_targets: RefCell<HashMap<String, Vec<gtk::Picture>>>,
+    image_targets: RefCell<HashMap<ImageRequest, Vec<gtk::Picture>>>,
+    reader_image_targets: RefCell<HashMap<ImageRequest, Vec<gtk::Picture>>>,
+    icon_targets: RefCell<HashMap<ImageRequest, Vec<gtk::Picture>>>,
+    icon_textures: RefCell<HashMap<ImageRequest, gtk::gdk::Paintable>>,
     page_count: Cell<usize>,
     page_index: Cell<usize>,
+    pages: RefCell<Vec<Page>>,
+    page_article_url: RefCell<Option<String>>,
+    book_session: RefCell<Option<Rc<BookSession>>>,
     reader_text_size: Cell<f64>,
     next_cursor: RefCell<Option<PageCursor>>,
+}
+
+#[derive(Clone)]
+struct ArticleRowState {
+    container: gtk::Box,
+    title: gtk::Label,
+    unread: gtk::Image,
+    starred: gtk::Image,
+    is_unread: Rc<Cell<bool>>,
+    is_starred: Rc<Cell<bool>>,
+    thumbnail: Option<gtk::Picture>,
 }
 
 pub fn build_window(application: &adw::Application) {
@@ -87,6 +118,7 @@ pub fn build_window(application: &adw::Application) {
         return;
     }
     install_css();
+    apply_appearance(load_appearance());
     let path = database_path();
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
@@ -121,7 +153,13 @@ pub fn build_window(application: &adw::Application) {
     let (worker, events) = Worker::start(path.clone());
     let (network, network_events) = NetworkWorker::start(path.clone());
     let (nostr, nostr_events) = NostrWorker::start(path);
-    let (images, image_events) = ImageWorker::start(image_cache_path());
+    let image_cache = image_cache_path();
+    let (images, image_events) = ImageWorker::start(image_cache.clone());
+    let (icons, icon_events) = ImageWorker::start_with_options(
+        image_cache.join("feed-icons"),
+        12,
+        std::time::Duration::from_secs(6),
+    );
     let (integration_action_sender, integration_actions) = std::sync::mpsc::channel();
     let integration = start_integration_service(database_path(), integration_action_sender)
         .map_err(|error| eprintln!("FeedLizard desktop integration unavailable: {error}"))
@@ -132,6 +170,7 @@ pub fn build_window(application: &adw::Application) {
         network,
         nostr,
         images,
+        icons,
         integration,
     ));
     connect_view(&view);
@@ -139,6 +178,7 @@ pub fn build_window(application: &adw::Application) {
     poll_network_events(&view, network_events);
     poll_nostr_events(&view, nostr_events);
     poll_image_events(&view, image_events);
+    poll_icon_events(&view, icon_events);
     poll_integration_actions(&view, integration_actions);
     view.worker.send(Command::LoadNavigation);
     view.worker.send(Command::LoadArticles(OwnedScope::Unread));
@@ -151,6 +191,7 @@ fn build_view(
     network: NetworkWorker,
     nostr: NostrWorker,
     images: ImageWorker,
+    icons: ImageWorker,
     integration: Option<IntegrationHandle>,
 ) -> View {
     let sidebar_list = gtk::ListBox::new();
@@ -166,10 +207,12 @@ fn build_view(
             icon,
             title,
             tag,
-            (tag == "scope:unread").then_some(0),
+            matches!(tag, "scope:unread" | "scope:starred").then_some(0),
         ));
     }
-    sidebar_list.append(&separator_row("Feeds"));
+    let feed_list = gtk::ListBox::new();
+    feed_list.set_selection_mode(gtk::SelectionMode::Single);
+    feed_list.add_css_class("navigation-sidebar");
 
     let sidebar_toolbar = adw::ToolbarView::new();
     let sidebar_header = adw::HeaderBar::new();
@@ -192,9 +235,21 @@ fn build_view(
     sidebar_toolbar.add_top_bar(&sidebar_header);
     let sidebar_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&sidebar_list)
+        .vexpand(true)
+        .child(&feed_list)
         .build();
-    sidebar_toolbar.set_content(Some(&sidebar_scroll));
+    install_smooth_wheel_scroll(&sidebar_scroll);
+    let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    sidebar_content.append(&sidebar_list);
+    sidebar_content.append(
+        &gtk::Label::builder()
+            .label("Feeds")
+            .xalign(0.0)
+            .css_classes(["section-heading"])
+            .build(),
+    );
+    sidebar_content.append(&sidebar_scroll);
+    sidebar_toolbar.set_content(Some(&sidebar_content));
 
     let article_title = adw::WindowTitle::new("Unread", "All feeds");
     let article_header = adw::HeaderBar::new();
@@ -238,6 +293,7 @@ fn build_view(
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&article_list)
         .build();
+    install_smooth_wheel_scroll(&article_scroller);
     let empty = adw::StatusPage::builder()
         .icon_name("view-list-symbolic")
         .title("Nothing to read yet")
@@ -255,16 +311,23 @@ fn build_view(
     let reader_title = gtk::Label::builder()
         .label("Select an article")
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .max_width_chars(72)
         .xalign(0.0)
         .css_classes(["reader-title"])
         .build();
     let reader_meta = gtk::Label::builder()
         .xalign(0.0)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .max_width_chars(88)
         .css_classes(["reader-meta"])
         .build();
     let reader_content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    reader_content.set_hexpand(true);
     reader_content.add_css_class("reader-content");
     let reader_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    reader_box.set_hexpand(true);
     reader_box.add_css_class("reader-page");
     reader_box.append(&reader_title);
     reader_box.append(&reader_meta);
@@ -273,6 +336,7 @@ fn build_view(
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&reader_box)
         .build();
+    install_smooth_wheel_scroll(&reader_scroll);
     let pages_deck = gtk::Stack::new();
     let animations = gtk::Settings::default()
         .map(|settings| settings.is_gtk_enable_animations())
@@ -344,8 +408,14 @@ fn build_view(
         .tooltip_text("Open Original")
         .sensitive(false)
         .build();
+    let book_view = gtk::Button::builder()
+        .icon_name("view-fullscreen-symbolic")
+        .tooltip_text("Enter Book View (F11)")
+        .sensitive(false)
+        .build();
     reader_header.pack_end(&open_original);
     reader_header.pack_end(&reader_star);
+    reader_header.pack_end(&book_view);
     let reader = adw::ToolbarView::new();
     reader.add_top_bar(&reader_header);
     reader.set_content(Some(&reader_mode_stack));
@@ -388,17 +458,23 @@ fn build_view(
         outer,
         inner,
         sidebar_list,
+        feed_list,
         article_list,
         article_title,
         empty,
         article_scroller,
+        reader_scroller: reader_scroll,
         reader_title,
         reader_meta,
         reader_content,
+        reader_mode_stack,
         pages_deck,
         pages_indicator,
         pages_previous,
         pages_next,
+        scroll_mode,
+        pages_mode,
+        book_view,
         reader_star,
         open_original,
         search_bar,
@@ -413,15 +489,29 @@ fn build_view(
         network,
         nostr,
         images,
+        icons,
         integration,
         scope: RefCell::new(OwnedScope::Unread),
+        unread_snapshot_dirty: Cell::new(false),
         article_ids: RefCell::new(Vec::new()),
+        article_items: RefCell::new(Vec::new()),
+        article_row_states: RefCell::new(HashMap::new()),
+        image_enrichment_requested: RefCell::new(HashSet::new()),
+        favicon_discovery_requested: RefCell::new(HashSet::new()),
+        article_extraction_requested: RefCell::new(HashSet::new()),
+        extracted_articles: RefCell::new(HashMap::new()),
         open_article: RefCell::new(None),
         feeds: RefCell::new(Vec::new()),
         folders: RefCell::new(Vec::new()),
         image_targets: RefCell::new(HashMap::new()),
+        reader_image_targets: RefCell::new(HashMap::new()),
+        icon_targets: RefCell::new(HashMap::new()),
+        icon_textures: RefCell::new(HashMap::new()),
         page_count: Cell::new(0),
         page_index: Cell::new(0),
+        pages: RefCell::new(Vec::new()),
+        page_article_url: RefCell::new(None),
+        book_session: RefCell::new(None),
         reader_text_size: Cell::new(reader_text_size),
         next_cursor: RefCell::new(None),
     }
@@ -429,33 +519,27 @@ fn build_view(
 
 fn connect_view(view: &Rc<View>) {
     let weak = Rc::downgrade(view);
+    view.pages_mode.connect_toggled(move |button| {
+        if button.is_active()
+            && let Some(view) = weak.upgrade()
+        {
+            request_full_article(&view);
+        }
+    });
+    let weak = Rc::downgrade(view);
     view.sidebar_list.connect_row_activated(move |_, row| {
         let Some(view) = weak.upgrade() else { return };
-        let Some(tag) = row.tooltip_text() else {
-            return;
-        };
-        if tag == "settings" {
-            show_settings(&view);
-            return;
-        }
-        let scope = match tag.as_str() {
-            "scope:unread" => OwnedScope::Unread,
-            "scope:library" => OwnedScope::Library,
-            "scope:starred" => OwnedScope::Starred,
-            value if value.starts_with("feed:") => OwnedScope::Feed(value[5..].to_owned()),
-            value if value.starts_with("folder:") => value[7..]
-                .parse()
-                .ok()
-                .map(OwnedScope::Folder)
-                .unwrap_or(OwnedScope::Library),
-            _ => return,
-        };
-        view.article_title.set_title(scope_title(&scope));
-        *view.scope.borrow_mut() = scope.clone();
-        view.manage
-            .set_visible(matches!(scope, OwnedScope::Feed(_) | OwnedScope::Folder(_)));
-        view.worker.send(Command::LoadArticles(scope));
-        view.outer.set_show_content(true);
+        view.feed_list.unselect_all();
+        activate_sidebar_row(&view, row);
+    });
+    if let Some(starred_row) = view.sidebar_list.row_at_index(2) {
+        install_starred_context_menu(view, &starred_row);
+    }
+    let weak = Rc::downgrade(view);
+    view.feed_list.connect_row_activated(move |_, row| {
+        let Some(view) = weak.upgrade() else { return };
+        view.sidebar_list.unselect_all();
+        activate_sidebar_row(&view, row);
     });
     let weak = Rc::downgrade(view);
     view.article_list.connect_row_activated(move |_, row| {
@@ -496,19 +580,19 @@ fn connect_view(view: &Rc<View>) {
     });
     let weak = Rc::downgrade(view);
     view.open_original.connect_clicked(move |_| {
-        let Some(view) = weak.upgrade() else { return };
-        if let Some(url) = view
-            .open_article
-            .borrow()
-            .as_ref()
-            .and_then(|article| article.url.as_deref())
-            && let Err(error) =
-                gio::AppInfo::launch_default_for_uri(url, None::<&gio::AppLaunchContext>)
-        {
-            view.toast
-                .add_toast(adw::Toast::new(&format!("Could not open article: {error}")));
+        if let Some(view) = weak.upgrade() {
+            open_article_original(&view);
         }
     });
+    let headline_click = gtk::GestureClick::new();
+    headline_click.set_button(gtk::gdk::BUTTON_PRIMARY);
+    let weak = Rc::downgrade(view);
+    headline_click.connect_released(move |_, _, _, _| {
+        if let Some(view) = weak.upgrade() {
+            open_article_original(&view);
+        }
+    });
+    view.reader_title.add_controller(headline_click);
     let weak = Rc::downgrade(view);
     view.mark_all.connect_clicked(move |_| {
         if let Some(view) = weak.upgrade() {
@@ -557,6 +641,12 @@ fn connect_view(view: &Rc<View>) {
             show_page(&view, view.page_index.get().saturating_add(1));
         }
     });
+    let weak = Rc::downgrade(view);
+    view.book_view.connect_clicked(move |_| {
+        if let Some(view) = weak.upgrade() {
+            enter_book_view(&view);
+        }
+    });
     let gesture = gtk::GestureClick::new();
     let weak = Rc::downgrade(view);
     gesture.connect_released(move |gesture, _, x, _| {
@@ -601,6 +691,43 @@ fn connect_view(view: &Rc<View>) {
             })
         });
     install_window_actions(view);
+}
+
+fn activate_sidebar_row(view: &Rc<View>, row: &gtk::ListBoxRow) {
+    let Some(tag) = row.tooltip_text() else {
+        return;
+    };
+    if tag == "settings" {
+        show_settings(view);
+        return;
+    }
+    let scope = match tag.as_str() {
+        "scope:unread" => OwnedScope::Unread,
+        "scope:library" => OwnedScope::Library,
+        "scope:starred" => OwnedScope::Starred,
+        value if value.starts_with("feed:") => OwnedScope::Feed(value[5..].to_owned()),
+        value if value.starts_with("folder:") => value[7..]
+            .parse()
+            .ok()
+            .map(OwnedScope::Folder)
+            .unwrap_or(OwnedScope::Library),
+        _ => return,
+    };
+    view.article_title.set_title(scope_title(&scope));
+    let was_unread = matches!(*view.scope.borrow(), OwnedScope::Unread);
+    let entering_unread = !was_unread && matches!(scope, OwnedScope::Unread);
+    let leaving_unread = was_unread && !matches!(scope, OwnedScope::Unread);
+    if entering_unread || leaving_unread {
+        view.unread_snapshot_dirty.set(false);
+    }
+    *view.scope.borrow_mut() = scope.clone();
+    view.manage
+        .set_visible(matches!(scope, OwnedScope::Feed(_) | OwnedScope::Folder(_)));
+    view.worker.send(Command::LoadArticles(scope));
+    if leaving_unread {
+        view.worker.send(Command::LoadNavigation);
+    }
+    view.outer.set_show_content(true);
 }
 
 fn show_text_dialog(
@@ -847,6 +974,7 @@ fn install_window_actions(view: &Rc<View>) {
             WindowAction::PreviousPage,
         ),
         ("next-page", &["Right", "Page_Down"], WindowAction::NextPage),
+        ("book-view", &["F11"], WindowAction::BookView),
         ("back", &["Escape"], WindowAction::Back),
     ] {
         let action = gio::SimpleAction::new(name, None);
@@ -870,10 +998,11 @@ enum WindowAction {
     ToggleStar,
     PreviousPage,
     NextPage,
+    BookView,
     Back,
 }
 
-fn perform_window_action(view: &View, action: WindowAction) {
+fn perform_window_action(view: &Rc<View>, action: WindowAction) {
     match action {
         WindowAction::Next => move_article_selection(view, 1),
         WindowAction::Previous => move_article_selection(view, -1),
@@ -897,6 +1026,7 @@ fn perform_window_action(view: &View, action: WindowAction) {
         WindowAction::NextPage => {
             show_page(view, view.page_index.get().saturating_add(1));
         }
+        WindowAction::BookView => enter_book_view(view),
         WindowAction::Back => {
             if view.inner.is_collapsed() && view.inner.shows_content() {
                 view.inner.set_show_content(false);
@@ -1086,6 +1216,18 @@ fn show_settings(view: &Rc<View>) {
         }
     });
     reader.add(&text_size);
+    let appearance = adw::ComboRow::builder()
+        .title("Appearance")
+        .subtitle("Use the system appearance or choose a Reader theme")
+        .model(&gtk::StringList::new(&["System", "Light", "Dark"]))
+        .selected(load_appearance().index())
+        .build();
+    appearance.connect_selected_notify(|row| {
+        let appearance = Appearance::from_index(row.selected());
+        apply_appearance(appearance);
+        save_appearance(appearance);
+    });
+    reader.add(&appearance);
     page.add(&reader);
 
     let keyboard = adw::PreferencesGroup::builder()
@@ -1215,6 +1357,12 @@ fn show_settings(view: &Rc<View>) {
         .build();
     about.add(
         &adw::ActionRow::builder()
+            .title("Version")
+            .subtitle(format_beta_version(env!("CARGO_PKG_VERSION")))
+            .build(),
+    );
+    about.add(
+        &adw::ActionRow::builder()
             .title("Private by design")
             .subtitle("Local-first · No account · No telemetry")
             .build(),
@@ -1240,6 +1388,14 @@ fn show_settings(view: &Rc<View>) {
     page.add(&about);
     dialog.add(&page);
     dialog.present(Some(&view.window));
+}
+
+fn format_beta_version(version: &str) -> String {
+    if let Some((base, beta)) = version.split_once("-beta.") {
+        format!("{base} Beta {beta}")
+    } else {
+        version.to_owned()
+    }
 }
 
 fn show_omarchy_integration(view: &Rc<View>) {
@@ -1578,7 +1734,7 @@ where
 
 fn poll_events(view: &Rc<View>, events: Receiver<Event>) {
     let view = Rc::clone(view);
-    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         if !view.window.is_visible() {
             return glib::ControlFlow::Break;
         }
@@ -1591,7 +1747,7 @@ fn poll_events(view: &Rc<View>, events: Receiver<Event>) {
 
 fn poll_network_events(view: &Rc<View>, events: Receiver<NetworkEvent>) {
     let view = Rc::clone(view);
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         if !view.window.is_visible() {
             return glib::ControlFlow::Break;
         }
@@ -1640,6 +1796,62 @@ fn poll_network_events(view: &Rc<View>, events: Receiver<NetworkEvent>) {
                     view.worker
                         .send(Command::LoadArticles(view.scope.borrow().clone()));
                 }
+                NetworkEvent::ArticleImagesDiscovered(images) => {
+                    for (article_id, image_url) in images {
+                        if let Some(item) = view
+                            .article_items
+                            .borrow_mut()
+                            .iter_mut()
+                            .find(|item| item.stable_id == article_id)
+                        {
+                            item.thumbnail_url = Some(image_url.clone());
+                        }
+                        if let Some(state) = view.article_row_states.borrow().get(&article_id)
+                            && let Some(picture) = &state.thumbnail
+                        {
+                            picture.set_opacity(1.0);
+                            load_article_thumbnail(&view, picture, &image_url);
+                        }
+                    }
+                }
+                NetworkEvent::FaviconsDiscovered(icons) => {
+                    if !icons.is_empty() {
+                        view.worker.send(Command::LoadNavigation);
+                    }
+                }
+                NetworkEvent::ArticleExtracted {
+                    article_id,
+                    mut document,
+                } => {
+                    view.extracted_articles
+                        .borrow_mut()
+                        .insert(article_id.clone(), document.clone());
+                    let article = view.open_article.borrow().clone();
+                    if let Some(article) = article.filter(|article| article.stable_id == article_id)
+                    {
+                        document.blocks.insert(
+                            0,
+                            Block::Heading {
+                                level: 1,
+                                text: article.title.clone(),
+                            },
+                        );
+                        render_pages(&view, &document, article.url.as_deref());
+                    }
+                }
+                NetworkEvent::ArticleExtractionFailed { article_id, error } => {
+                    view.article_extraction_requested
+                        .borrow_mut()
+                        .remove(&article_id);
+                    if view
+                        .open_article
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|article| article.stable_id == article_id)
+                    {
+                        view.toast.add_toast(adw::Toast::new(&error));
+                    }
+                }
                 NetworkEvent::Error(error) => view.toast.add_toast(adw::Toast::new(&error)),
             }
         }
@@ -1649,7 +1861,7 @@ fn poll_network_events(view: &Rc<View>, events: Receiver<NetworkEvent>) {
 
 fn poll_nostr_events(view: &Rc<View>, events: Receiver<NostrEvent>) {
     let view = Rc::clone(view);
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         if !view.window.is_visible() {
             return glib::ControlFlow::Break;
         }
@@ -1711,13 +1923,13 @@ fn poll_nostr_events(view: &Rc<View>, events: Receiver<NostrEvent>) {
 
 fn poll_image_events(view: &Rc<View>, events: Receiver<ImageEvent>) {
     let view = Rc::clone(view);
-    glib::timeout_add_local(std::time::Duration::from_millis(32), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
         if !view.window.is_visible() {
             return glib::ControlFlow::Break;
         }
         while let Ok(event) = events.try_recv() {
             match event {
-                ImageEvent::Loaded { url, image } => {
+                ImageEvent::Loaded { request, image } => {
                     let bytes = glib::Bytes::from_owned(image.rgba);
                     let texture = gtk::gdk::MemoryTexture::new(
                         image.width as i32,
@@ -1726,15 +1938,66 @@ fn poll_image_events(view: &Rc<View>, events: Receiver<ImageEvent>) {
                         &bytes,
                         (image.width * 4) as usize,
                     );
-                    if let Some(targets) = view.image_targets.borrow_mut().remove(&url) {
+                    if let Some(targets) = view.image_targets.borrow_mut().remove(&request) {
                         for picture in targets {
                             picture.set_paintable(Some(&texture));
+                            picture.set_opacity(1.0);
+                            picture.remove_css_class("image-placeholder");
+                        }
+                    }
+                    if let Some(targets) = view.reader_image_targets.borrow_mut().remove(&request) {
+                        for picture in targets {
+                            picture.set_paintable(Some(&texture));
+                            picture.set_opacity(1.0);
                             picture.remove_css_class("image-placeholder");
                         }
                     }
                 }
-                ImageEvent::Failed { url } => {
-                    view.image_targets.borrow_mut().remove(&url);
+                ImageEvent::Failed { request } => {
+                    view.image_targets.borrow_mut().remove(&request);
+                    if let Some(targets) = view.reader_image_targets.borrow_mut().remove(&request) {
+                        for picture in targets {
+                            picture.set_visible(false);
+                        }
+                    }
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn poll_icon_events(view: &Rc<View>, events: Receiver<ImageEvent>) {
+    let view = Rc::clone(view);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        if !view.window.is_visible() {
+            return glib::ControlFlow::Break;
+        }
+        while let Ok(event) = events.try_recv() {
+            match event {
+                ImageEvent::Loaded { request, image } => {
+                    let bytes = glib::Bytes::from_owned(image.rgba);
+                    let texture: gtk::gdk::Paintable = gtk::gdk::MemoryTexture::new(
+                        image.width as i32,
+                        image.height as i32,
+                        gtk::gdk::MemoryFormat::R8g8b8a8,
+                        &bytes,
+                        (image.width * 4) as usize,
+                    )
+                    .upcast();
+                    view.icon_textures
+                        .borrow_mut()
+                        .insert(request.clone(), texture.clone());
+                    if let Some(targets) = view.icon_targets.borrow_mut().remove(&request) {
+                        for picture in targets {
+                            picture.set_paintable(Some(&texture));
+                            picture.set_opacity(1.0);
+                            picture.remove_css_class("image-placeholder");
+                        }
+                    }
+                }
+                ImageEvent::Failed { request } => {
+                    view.icon_targets.borrow_mut().remove(&request);
                 }
             }
         }
@@ -1744,7 +2007,7 @@ fn poll_image_events(view: &Rc<View>, events: Receiver<ImageEvent>) {
 
 fn poll_integration_actions(view: &Rc<View>, actions: Receiver<IntegrationAction>) {
     let view = Rc::clone(view);
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         if !view.window.is_visible() {
             return glib::ControlFlow::Break;
         }
@@ -1786,8 +2049,8 @@ fn apply_event(view: &View, event: Event) {
             }
             *view.feeds.borrow_mut() = feeds.clone();
             *view.folders.borrow_mut() = folders.clone();
-            while let Some(row) = view.sidebar_list.row_at_index(5) {
-                view.sidebar_list.remove(&row);
+            while let Some(row) = view.feed_list.row_at_index(0) {
+                view.feed_list.remove(&row);
             }
             if let Some(row) = view.sidebar_list.row_at_index(0)
                 && let Some(label) = row
@@ -1798,21 +2061,43 @@ fn apply_event(view: &View, event: Event) {
             {
                 label.set_text(&stats.unread.to_string());
             }
+            if let Some(row) = view.sidebar_list.row_at_index(2)
+                && let Some(label) = row
+                    .child()
+                    .and_then(|c| c.downcast::<gtk::Box>().ok())
+                    .and_then(|b| b.last_child())
+                    .and_then(|c| c.downcast::<gtk::Label>().ok())
+            {
+                label.set_text(&stats.starred.to_string());
+            }
             for folder in folders {
-                view.sidebar_list.append(&navigation_row(
+                let row = navigation_row(
                     "folder-symbolic",
                     &folder.name,
                     &format!("folder:{}", folder.id),
                     None,
-                ));
+                );
+                install_folder_drop(&row, folder.id, view.worker.clone(), view.toast.clone());
+                view.feed_list.append(&row);
+            }
+            let favicon_candidates = feeds
+                .iter()
+                .filter_map(|feed| {
+                    let site_url = feed_icon_discovery_page(feed)?;
+                    let mut requested = view.favicon_discovery_requested.borrow_mut();
+                    requested
+                        .insert(feed.stable_id.clone())
+                        .then(|| (feed.stable_id.clone(), site_url))
+                })
+                .collect::<Vec<_>>();
+            if !favicon_candidates.is_empty() {
+                view.network
+                    .send(NetworkCommand::DiscoverFavicons(favicon_candidates));
             }
             for feed in feeds {
-                view.sidebar_list.append(&navigation_row(
-                    "application-rss+xml-symbolic",
-                    &feed.display_name,
-                    &format!("feed:{}", feed.stable_id),
-                    None,
-                ));
+                let row = feed_navigation_row(view, &feed);
+                install_feed_drag(&row, &feed.stable_id);
+                view.feed_list.append(&row);
             }
         }
         Event::Articles {
@@ -1821,14 +2106,43 @@ fn apply_event(view: &View, event: Event) {
             next,
             append,
         } => {
+            if !append
+                && matches!(scope, OwnedScope::Unread)
+                && matches!(*view.scope.borrow(), OwnedScope::Unread)
+                && view.unread_snapshot_dirty.get()
+            {
+                return;
+            }
             *view.scope.borrow_mut() = scope;
+            request_article_image_enrichment(view, &items);
             populate_articles(view, items, next, append);
         }
         Event::SearchResults { query, items } => {
             view.article_title.set_title(&format!("Search: {query}"));
+            request_article_image_enrichment(view, &items);
             populate_articles(view, items, None, false);
         }
         Event::Article(article) => show_article(view, *article),
+        Event::ReadChanged { id, read } => {
+            apply_article_state(view, &id, Some(read), None);
+            if read && matches!(*view.scope.borrow(), OwnedScope::Unread) {
+                view.unread_snapshot_dirty.set(true);
+            }
+            view.worker.send(Command::LoadNavigation);
+        }
+        Event::StarredChanged { id, starred } => {
+            apply_article_state(view, &id, None, Some(starred));
+            view.worker.send(Command::LoadNavigation);
+        }
+        Event::FeedRemoved => {
+            view.toast.add_toast(adw::Toast::new("Feed unsubscribed"));
+            *view.scope.borrow_mut() = OwnedScope::Unread;
+            if let Some(row) = view.sidebar_list.row_at_index(0) {
+                view.sidebar_list.select_row(Some(&row));
+            }
+            view.worker.send(Command::LoadNavigation);
+            view.worker.send(Command::LoadArticles(OwnedScope::Unread));
+        }
         Event::MutationComplete => {
             view.worker.send(Command::LoadNavigation);
             view.worker
@@ -1841,6 +2155,81 @@ fn apply_event(view: &View, event: Event) {
                 .send(Command::LoadArticles(view.scope.borrow().clone()));
         }
         Event::Error(error) => view.toast.add_toast(adw::Toast::new(&error)),
+    }
+}
+
+fn apply_article_state(view: &View, stable_id: &str, read: Option<bool>, starred: Option<bool>) {
+    if let Some(article) = view.open_article.borrow_mut().as_mut()
+        && article.stable_id == stable_id
+    {
+        if let Some(read) = read {
+            article.is_read = read;
+        }
+        if let Some(starred) = starred {
+            article.is_starred = starred;
+            view.reader_star.set_active(starred);
+            view.reader_star.set_icon_name(if starred {
+                "starred-symbolic"
+            } else {
+                "non-starred-symbolic"
+            });
+        }
+    }
+
+    let Some(index) = view
+        .article_items
+        .borrow()
+        .iter()
+        .position(|item| item.stable_id == stable_id)
+    else {
+        return;
+    };
+    {
+        let mut items = view.article_items.borrow_mut();
+        let item = &mut items[index];
+        if let Some(read) = read {
+            item.is_unread = !read;
+        }
+        if let Some(starred) = starred {
+            item.is_starred = starred;
+        }
+    }
+    if let Some(state) = view.article_row_states.borrow().get(stable_id) {
+        if let Some(read) = read {
+            state.unread.set_visible(!read);
+            state.is_unread.set(!read);
+            if read {
+                state.container.add_css_class("article-row-read");
+                state.title.remove_css_class("article-title-unread");
+                state.title.add_css_class("article-title");
+            } else {
+                state.container.remove_css_class("article-row-read");
+                state.title.remove_css_class("article-title");
+                state.title.add_css_class("article-title-unread");
+            }
+        }
+        if let Some(starred) = starred {
+            state.starred.set_visible(starred);
+            state.is_starred.set(starred);
+        }
+    }
+}
+
+fn request_article_image_enrichment(view: &View, items: &[ArticleListItem]) {
+    let mut requested = view.image_enrichment_requested.borrow_mut();
+    let candidates = items
+        .iter()
+        .filter_map(|item| {
+            if item.thumbnail_url.is_some() || !requested.insert(item.stable_id.clone()) {
+                return None;
+            }
+            Some((item.stable_id.clone(), item.article_url.clone()?))
+        })
+        .take(24)
+        .collect::<Vec<_>>();
+    if !candidates.is_empty() {
+        view.network
+            .send(NetworkCommand::DiscoverArticleImages(candidates));
     }
 }
 
@@ -1872,7 +2261,12 @@ fn populate_articles(
             view.article_list.remove(&child);
         }
         view.article_ids.borrow_mut().clear();
+        view.article_items.borrow_mut().clear();
+        view.article_row_states.borrow_mut().clear();
     }
+    view.article_items
+        .borrow_mut()
+        .extend(items.iter().cloned());
     for item in items {
         view.article_ids.borrow_mut().push(item.stable_id.clone());
         view.article_list.append(&article_row(view, &item));
@@ -1915,7 +2309,7 @@ fn article_row(view: &View, item: &ArticleListItem) -> gtk::ListBoxRow {
         .label(format!(
             "{}  ·  {}",
             item.feed_name,
-            relative_time(item.published_at)
+            article_time(item.published_at.or(item.updated_at), item.sort_timestamp)
         ))
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -1954,55 +2348,109 @@ fn article_row(view: &View, item: &ArticleListItem) -> gtk::ListBoxRow {
     }
     let state = gtk::Box::new(gtk::Orientation::Vertical, 8);
     state.set_valign(gtk::Align::Center);
-    if item.is_unread {
-        state.append(
-            &gtk::Image::builder()
-                .icon_name("media-record-symbolic")
-                .tooltip_text("Unread")
-                .css_classes(["unread-dot"])
-                .build(),
-        );
-    }
-    if item.is_starred {
-        state.append(
-            &gtk::Image::builder()
-                .icon_name("starred-symbolic")
-                .tooltip_text("Starred")
-                .css_classes(["star-indicator"])
-                .build(),
-        );
-    }
-    if state.first_child().is_some() {
-        outer.append(&state);
-    }
+    state.set_width_request(16);
+    let unread = gtk::Image::builder()
+        .icon_name("media-record-symbolic")
+        .tooltip_text("Unread")
+        .visible(item.is_unread)
+        .css_classes(["unread-dot"])
+        .build();
+    let starred = gtk::Image::builder()
+        .icon_name("starred-symbolic")
+        .tooltip_text("Starred")
+        .visible(item.is_starred)
+        .css_classes(["star-indicator"])
+        .build();
+    state.append(&unread);
+    state.append(&starred);
+    let is_unread = Rc::new(Cell::new(item.is_unread));
+    let is_starred = Rc::new(Cell::new(item.is_starred));
+    outer.append(&state);
     outer.append(&box_);
-    if let Some(url) = item.thumbnail_url.as_deref() {
+    let thumbnail = if item.thumbnail_url.is_some() || item.article_url.is_some() {
+        let overlay = gtk::Overlay::new();
+        overlay.set_size_request(96, 72);
+        overlay.set_child(Some(
+            &gtk::Image::builder()
+                .icon_name("image-x-generic-symbolic")
+                .css_classes(["article-image-fallback"])
+                .build(),
+        ));
         let picture = gtk::Picture::builder()
             .width_request(96)
             .height_request(72)
+            .hexpand(false)
+            .vexpand(false)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
             .content_fit(gtk::ContentFit::Cover)
             .can_shrink(true)
+            .opacity(if item.thumbnail_url.is_some() {
+                1.0
+            } else {
+                0.0
+            })
             .css_classes(["article-thumbnail", "image-placeholder"])
             .build();
-        view.image_targets
-            .borrow_mut()
-            .entry(url.to_owned())
-            .or_default()
-            .push(picture.clone());
-        view.images.load(ImageRequest {
-            url: url.to_owned(),
-            width: 192,
-            height: 144,
-            fit: Fit::Cover,
-        });
-        outer.append(&picture);
-    }
+        overlay.add_overlay(&picture);
+        if let Some(url) = item.thumbnail_url.as_deref() {
+            load_article_thumbnail(view, &picture, url);
+        }
+        outer.append(&overlay);
+        Some(picture)
+    } else {
+        None
+    };
+    view.article_row_states.borrow_mut().insert(
+        item.stable_id.clone(),
+        ArticleRowState {
+            container: outer.clone(),
+            title: title.clone(),
+            unread,
+            starred,
+            is_unread: Rc::clone(&is_unread),
+            is_starred: Rc::clone(&is_starred),
+            thumbnail,
+        },
+    );
     row.set_child(Some(&outer));
+    install_article_context_menu(
+        &row,
+        item.stable_id.clone(),
+        is_unread,
+        is_starred,
+        view.worker.clone(),
+    );
     row
 }
 
+fn load_article_thumbnail(view: &View, picture: &gtk::Picture, url: &str) {
+    let request = ImageRequest {
+        url: url.to_owned(),
+        width: 96,
+        height: 72,
+        fit: Fit::Cover,
+    };
+    view.image_targets
+        .borrow_mut()
+        .entry(request.clone())
+        .or_default()
+        .push(picture.clone());
+    view.images.load(request);
+}
+
 fn show_article(view: &View, article: FullArticle) {
+    let is_different_article = view
+        .open_article
+        .borrow()
+        .as_ref()
+        .is_none_or(|open| open.stable_id != article.stable_id);
+    // Every article begins in the immediate RSS-native reader. Pages is an
+    // explicit per-article choice, never a sticky default.
+    view.scroll_mode.set_active(true);
     view.reader_title.set_text(&article.title);
+    view.reader_title
+        .set_cursor_from_name(article.url.as_ref().map(|_| "pointer"));
     let byline = article
         .author
         .as_deref()
@@ -2012,7 +2460,10 @@ fn show_article(view: &View, article: FullArticle) {
         "{}{} · {}",
         article.feed_name,
         byline,
-        relative_time(article.published_at)
+        article_time(
+            article.published_at.or(article.updated_at),
+            article.inserted_at
+        )
     ));
     let source = article
         .content
@@ -2022,6 +2473,7 @@ fn show_article(view: &View, article: FullArticle) {
     while let Some(child) = view.reader_content.first_child() {
         view.reader_content.remove(&child);
     }
+    view.reader_image_targets.borrow_mut().clear();
     if let Some(url) = article.image_url.as_deref() {
         let hero = reader_picture(view, url, 1200, 640, 320, "reader-hero");
         view.reader_content.append(&hero);
@@ -2042,6 +2494,7 @@ fn show_article(view: &View, article: FullArticle) {
                 &Document {
                     blocks: page_blocks,
                 },
+                article.url.as_deref(),
             );
         }
         _ => {
@@ -2049,8 +2502,30 @@ fn show_article(view: &View, article: FullArticle) {
                 "This feed did not include readable article content. Open the original to read it.",
                 "reader-body",
             ));
-            render_pages(view, &Document { blocks: Vec::new() });
+            render_pages(
+                view,
+                &Document { blocks: Vec::new() },
+                article.url.as_deref(),
+            );
         }
+    }
+    *view.open_article.borrow_mut() = Some(article.clone());
+    if let Some(mut extracted) = view
+        .extracted_articles
+        .borrow()
+        .get(&article.stable_id)
+        .cloned()
+    {
+        extracted.blocks.insert(
+            0,
+            Block::Heading {
+                level: 1,
+                text: article.title.clone(),
+            },
+        );
+        render_pages(view, &extracted, article.url.as_deref());
+    } else if view.pages_mode.is_active() {
+        request_full_article(view);
     }
     view.reader_star.set_active(article.is_starred);
     view.reader_star.set_icon_name(if article.is_starred {
@@ -2059,15 +2534,60 @@ fn show_article(view: &View, article: FullArticle) {
         "non-starred-symbolic"
     });
     view.open_original.set_sensitive(article.url.is_some());
-    *view.open_article.borrow_mut() = Some(article);
+    if is_different_article {
+        let adjustment = view.reader_scroller.vadjustment();
+        adjustment.set_value(adjustment.lower());
+        glib::idle_add_local_once(move || adjustment.set_value(adjustment.lower()));
+    }
 }
 
-fn render_pages(view: &View, document: &Document) {
+fn request_full_article(view: &View) {
+    let Some(article) = view.open_article.borrow().clone() else {
+        return;
+    };
+    let Some(url) = article.url else { return };
+    if view
+        .extracted_articles
+        .borrow()
+        .contains_key(&article.stable_id)
+        || !view
+            .article_extraction_requested
+            .borrow_mut()
+            .insert(article.stable_id.clone())
+    {
+        return;
+    }
+    view.network.send(NetworkCommand::ExtractArticle {
+        article_id: article.stable_id,
+        url,
+    });
+}
+
+fn open_article_original(view: &View) {
+    let url = view
+        .open_article
+        .borrow()
+        .as_ref()
+        .and_then(|article| article.url.clone());
+    if let Some(url) = url {
+        open_external_url(&view.toast, &url);
+    }
+}
+
+fn open_external_url(toast: &adw::ToastOverlay, url: &str) {
+    if let Err(error) = gio::AppInfo::launch_default_for_uri(url, None::<&gio::AppLaunchContext>) {
+        toast.add_toast(adw::Toast::new(&format!("Could not open link: {error}")));
+    }
+}
+
+fn render_pages(view: &View, document: &Document, article_url: Option<&str>) {
     while let Some(child) = view.pages_deck.first_child() {
         view.pages_deck.remove(&child);
     }
-    let available_width = (view.pages_deck.width() - 144).max(360);
-    let available_height = (view.pages_deck.height() - 100).max(480) as u32;
+    // The Pages stack is hidden while Scroll is selected, so it may not have
+    // an allocation yet. The containing mode stack is always allocated.
+    let available_width = (view.reader_mode_stack.width() - 132).max(240);
+    let available_height = (view.reader_mode_stack.height() - 220).max(240) as u32;
     let measure_widget = gtk::Label::new(None);
     let pages = feedlizard_reader::paginate(document, available_height, 16, 240, |text, style| {
         let layout = measure_widget.create_pango_layout(Some(text));
@@ -2092,15 +2612,22 @@ fn render_pages(view: &View, document: &Document) {
         layout.pixel_size().1.max(1) as u32
     });
     for (index, page) in pages.iter().enumerate() {
-        view.pages_deck
-            .add_named(&page_widget(view, page), Some(&format!("page-{index}")));
+        view.pages_deck.add_named(
+            &page_widget(view, page, article_url),
+            Some(&format!("page-{index}")),
+        );
     }
+    *view.pages.borrow_mut() = pages.clone();
+    *view.page_article_url.borrow_mut() = article_url.map(str::to_owned);
     view.page_count.set(pages.len());
+    view.book_view.set_sensitive(!pages.is_empty());
     show_page(view, 0);
 }
 
-fn page_widget(view: &View, page: &Page) -> gtk::Widget {
+fn page_widget(view: &View, page: &Page, article_url: Option<&str>) -> gtk::Widget {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    content.set_hexpand(true);
+    content.set_halign(gtk::Align::Fill);
     content.add_css_class("page-paper");
     for chunk in &page.chunks {
         match chunk {
@@ -2112,7 +2639,29 @@ fn page_widget(view: &View, page: &Page) -> gtk::Widget {
                     PageStyle::Code => "reader-code",
                     _ => "reader-body",
                 };
-                content.append(&reader_label(text, class));
+                let label = reader_label(text, class);
+                if matches!(style, PageStyle::Heading(1))
+                    && let Some(url) = article_url
+                {
+                    install_label_link(&label, url, &view.toast);
+                }
+                content.append(&label);
+            }
+            PageChunk::Link { text, url } => {
+                let link = gtk::LinkButton::with_label(url, text);
+                link.set_halign(gtk::Align::Start);
+                link.set_hexpand(true);
+                link.set_tooltip_text(Some(url));
+                if let Some(label) = link
+                    .child()
+                    .and_then(|child| child.downcast::<gtk::Label>().ok())
+                {
+                    label.set_wrap(true);
+                    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+                    label.set_max_width_chars(72);
+                    label.set_xalign(0.0);
+                }
+                content.append(&link);
             }
             PageChunk::Image { url, alt } => {
                 let picture = reader_picture(view, url, 960, 600, 240, "page-image");
@@ -2142,6 +2691,357 @@ fn show_page(view: &View, requested: usize) {
     view.pages_next.set_sensitive(index + 1 < count);
 }
 
+struct BookSession {
+    window: adw::ApplicationWindow,
+    carousel_stack: gtk::Stack,
+    wide: gtk::Stack,
+    narrow: gtk::Stack,
+    progress: gtk::Label,
+    previous: gtk::Button,
+    next: gtk::Button,
+    current_page: Cell<usize>,
+    page_count: usize,
+}
+
+fn enter_book_view(view: &Rc<View>) {
+    if let Some(session) = view.book_session.borrow().as_ref() {
+        session.window.present();
+        return;
+    }
+    let pages = view.pages.borrow().clone();
+    if pages.is_empty() {
+        return;
+    }
+    let application = view.window.application().expect("application");
+    let window = adw::ApplicationWindow::builder()
+        .application(&application)
+        .title("FeedLizard Book View")
+        .default_width(1440)
+        .default_height(900)
+        .build();
+    window.add_css_class("book-window");
+
+    let wide = book_page_stack();
+    let narrow = book_page_stack();
+    for (spread_index, spread) in pages.chunks(2).enumerate() {
+        let shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        shell.add_css_class("book-spread");
+        shell.set_halign(gtk::Align::Center);
+        shell.set_valign(gtk::Align::Center);
+        for (side, page) in spread.iter().enumerate() {
+            let paper = page_widget(view, page, view.page_article_url.borrow().as_deref());
+            paper.add_css_class("book-page-paper");
+            paper.add_css_class(if side == 0 {
+                "book-page-left"
+            } else {
+                "book-page-right"
+            });
+            shell.append(&paper);
+        }
+        if spread.len() == 1 {
+            shell.add_css_class("book-spread-single");
+        }
+        wide.add_named(&shell, Some(&format!("spread-{spread_index}")));
+    }
+    for (page_index, page) in pages.iter().enumerate() {
+        let shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        shell.add_css_class("book-spread");
+        shell.add_css_class("book-spread-single");
+        shell.set_halign(gtk::Align::Center);
+        shell.set_valign(gtk::Align::Center);
+        let paper = page_widget(view, page, view.page_article_url.borrow().as_deref());
+        paper.add_css_class("book-page-paper");
+        shell.append(&paper);
+        narrow.add_named(&shell, Some(&format!("single-{page_index}")));
+    }
+
+    let carousel_stack = gtk::Stack::new();
+    carousel_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    carousel_stack.add_named(&wide, Some("wide"));
+    carousel_stack.add_named(&narrow, Some("narrow"));
+    carousel_stack.set_visible_child_name("wide");
+
+    let exit = gtk::Button::builder()
+        .icon_name("view-restore-symbolic")
+        .tooltip_text("Exit Book View (Esc)")
+        .build();
+    let title = gtk::Label::builder()
+        .label(
+            view.open_article
+                .borrow()
+                .as_ref()
+                .map(|article| article.title.as_str())
+                .unwrap_or("Pages"),
+        )
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .hexpand(true)
+        .xalign(0.0)
+        .css_classes(["book-title"])
+        .build();
+    let progress = gtk::Label::builder().css_classes(["book-progress"]).build();
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    controls.add_css_class("book-controls");
+    controls.append(&exit);
+    controls.append(&title);
+    controls.append(&progress);
+    let controls_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::Crossfade)
+        .transition_duration(180)
+        .reveal_child(true)
+        .child(&controls)
+        .halign(gtk::Align::Fill)
+        .valign(gtk::Align::Start)
+        .build();
+
+    let previous = gtk::Button::builder()
+        .icon_name("go-previous-symbolic")
+        .tooltip_text("Previous page (Left Arrow)")
+        .css_classes(["circular", "book-page-arrow"])
+        .build();
+    previous.update_property(&[gtk::accessible::Property::Label("Previous page")]);
+    let next = gtk::Button::builder()
+        .icon_name("go-next-symbolic")
+        .tooltip_text("Next page (Right Arrow)")
+        .css_classes(["circular", "book-page-arrow"])
+        .build();
+    next.update_property(&[gtk::accessible::Property::Label("Next page")]);
+    let bottom_navigation = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+    bottom_navigation.add_css_class("book-bottom-navigation");
+    bottom_navigation.set_halign(gtk::Align::Center);
+    bottom_navigation.set_valign(gtk::Align::End);
+    bottom_navigation.append(&previous);
+    bottom_navigation.append(&next);
+
+    let overlay = gtk::Overlay::new();
+    overlay.add_css_class("book-environment");
+    overlay.set_child(Some(&carousel_stack));
+    overlay.add_overlay(&controls_revealer);
+    overlay.add_overlay(&bottom_navigation);
+    window.set_content(Some(&overlay));
+    if let Ok(condition) = adw::BreakpointCondition::parse("max-width: 1050px") {
+        let breakpoint = adw::Breakpoint::new(condition);
+        breakpoint.add_setter(
+            &carousel_stack,
+            "visible-child-name",
+            Some(&"narrow".to_value()),
+        );
+        window.add_breakpoint(breakpoint);
+    }
+
+    let session = Rc::new(BookSession {
+        window: window.clone(),
+        carousel_stack,
+        wide,
+        narrow,
+        progress,
+        previous,
+        next,
+        current_page: Cell::new(view.page_index.get().min(pages.len() - 1)),
+        page_count: pages.len(),
+    });
+    book_set_page(&session, session.current_page.get(), false);
+    connect_book_view(view, &session, &overlay, &controls_revealer, &exit);
+    *view.book_session.borrow_mut() = Some(Rc::clone(&session));
+    window.present();
+    window.fullscreen();
+}
+
+fn book_page_stack() -> gtk::Stack {
+    let stack = gtk::Stack::new();
+    stack.set_transition_type(if animations_enabled() {
+        gtk::StackTransitionType::SlideLeftRight
+    } else {
+        gtk::StackTransitionType::None
+    });
+    stack.set_transition_duration(220);
+    stack.set_hexpand(true);
+    stack.set_vexpand(true);
+    stack
+}
+
+fn connect_book_view(
+    view: &Rc<View>,
+    session: &Rc<BookSession>,
+    overlay: &gtk::Overlay,
+    controls: &gtk::Revealer,
+    exit: &gtk::Button,
+) {
+    let weak_session = Rc::downgrade(session);
+    session.previous.connect_clicked(move |_| {
+        if let Some(session) = weak_session.upgrade() {
+            book_navigate(&session, -1);
+        }
+    });
+    let weak_session = Rc::downgrade(session);
+    session.next.connect_clicked(move |_| {
+        if let Some(session) = weak_session.upgrade() {
+            book_navigate(&session, 1);
+        }
+    });
+
+    let window = session.window.clone();
+    exit.connect_clicked(move |_| window.close());
+    let keys = gtk::EventControllerKey::new();
+    let weak_session = Rc::downgrade(session);
+    keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(session) = weak_session.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        match key {
+            gtk::gdk::Key::Escape | gtk::gdk::Key::F11 => {
+                session.window.close();
+                glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Right | gtk::gdk::Key::Page_Down => {
+                book_navigate(&session, 1);
+                glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Left | gtk::gdk::Key::Page_Up => {
+                book_navigate(&session, -1);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    session.window.add_controller(keys);
+
+    let click = gtk::GestureClick::new();
+    let weak_session = Rc::downgrade(session);
+    click.connect_released(move |gesture, _, x, _| {
+        let Some(session) = weak_session.upgrade() else {
+            return;
+        };
+        let width = gesture.widget().map(|widget| widget.width()).unwrap_or(1) as f64;
+        if x < width * 0.10 {
+            book_navigate(&session, -1);
+        } else if x > width * 0.90 {
+            book_navigate(&session, 1);
+        }
+    });
+    overlay.add_controller(click);
+
+    // Carousel dragging can lose the gesture to selectable page content. This
+    // capture-phase fallback makes a deliberate horizontal page drag reliable
+    // while leaving short drags available for text selection.
+    let drag = gtk::GestureDrag::new();
+    drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+    drag.connect_drag_update(|gesture, offset_x, offset_y| {
+        if offset_x.abs() >= 16.0 && offset_x.abs() > offset_y.abs() * 1.25 {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        }
+    });
+    let weak_session = Rc::downgrade(session);
+    drag.connect_drag_end(move |_, offset_x, offset_y| {
+        let Some(session) = weak_session.upgrade() else {
+            return;
+        };
+        if offset_x.abs() >= 72.0 && offset_x.abs() > offset_y.abs() * 1.25 {
+            book_navigate(&session, if offset_x < 0.0 { 1 } else { -1 });
+        }
+    });
+    overlay.add_controller(drag);
+
+    let generation = Rc::new(Cell::new(0_u64));
+    let motion = gtk::EventControllerMotion::new();
+    let revealer = controls.clone();
+    let generation_for_motion = Rc::clone(&generation);
+    motion.connect_motion(move |_, _, _| {
+        if !revealer.reveals_child() {
+            revealer.set_reveal_child(true);
+            schedule_book_controls_hide(&revealer, Rc::clone(&generation_for_motion));
+        }
+    });
+    overlay.add_controller(motion);
+    schedule_book_controls_hide(controls, generation);
+
+    let weak_view = Rc::downgrade(view);
+    let weak_session = Rc::downgrade(session);
+    session.window.connect_close_request(move |_| {
+        if let (Some(view), Some(session)) = (weak_view.upgrade(), weak_session.upgrade()) {
+            show_page(&view, session.current_page.get());
+            view.book_session.borrow_mut().take();
+        }
+        glib::Propagation::Proceed
+    });
+}
+
+fn book_navigate(session: &BookSession, direction: i32) {
+    let wide = session.carousel_stack.visible_child_name().as_deref() == Some("wide");
+    let target = book_navigation_target(
+        session.current_page.get(),
+        direction,
+        wide,
+        session.page_count,
+    );
+    book_set_page(session, target, animations_enabled());
+}
+
+fn book_navigation_target(current: usize, direction: i32, wide: bool, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let step = if wide { 2 } else { 1 };
+    (current as i64 + i64::from(direction) * step as i64).clamp(0, count.saturating_sub(1) as i64)
+        as usize
+}
+
+fn book_set_page(session: &BookSession, requested: usize, animate: bool) {
+    let page = requested.min(session.page_count.saturating_sub(1));
+    session.current_page.set(page);
+    let transition = if animate {
+        gtk::StackTransitionType::SlideLeftRight
+    } else {
+        gtk::StackTransitionType::None
+    };
+    session.wide.set_transition_type(transition);
+    session.narrow.set_transition_type(transition);
+    session
+        .wide
+        .set_visible_child_name(&format!("spread-{}", page / 2));
+    session
+        .narrow
+        .set_visible_child_name(&format!("single-{page}"));
+    book_update_position(session, page);
+}
+
+fn book_update_position(session: &BookSession, page: usize) {
+    let page = page.min(session.page_count.saturating_sub(1));
+    session.current_page.set(page);
+    let wide = session.carousel_stack.visible_child_name().as_deref() == Some("wide");
+    session
+        .progress
+        .set_text(&book_progress_label(page, session.page_count, wide));
+    session.previous.set_sensitive(page > 0);
+    let step = if wide { 2 } else { 1 };
+    session.next.set_sensitive(page + step < session.page_count);
+}
+
+fn book_progress_label(page: usize, count: usize, wide: bool) -> String {
+    let page = page.min(count.saturating_sub(1));
+    if wide && page + 1 < count {
+        format!("Pages {}–{} of {}", page + 1, page + 2, count)
+    } else {
+        format!("Page {} of {}", page + 1, count)
+    }
+}
+
+fn animations_enabled() -> bool {
+    gtk::Settings::default()
+        .map(|settings| settings.is_gtk_enable_animations())
+        .unwrap_or(true)
+}
+
+fn schedule_book_controls_hide(revealer: &gtk::Revealer, generation: Rc<Cell<u64>>) {
+    let marker = generation.get().wrapping_add(1);
+    generation.set(marker);
+    let revealer = revealer.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
+        if generation.get() == marker && animations_enabled() {
+            revealer.set_reveal_child(false);
+        }
+    });
+}
+
 fn render_reader_block(view: &View, container: &gtk::Box, block: Block) {
     match block {
         Block::Heading { level, text } => container.append(&reader_label(
@@ -2155,10 +3055,11 @@ fn render_reader_block(view: &View, container: &gtk::Box, block: Block) {
         Block::Paragraph { text, links } => {
             container.append(&reader_label(&text, "reader-body"));
             if !links.is_empty() {
-                let link_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                let link_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
                 link_box.add_css_class("reader-links");
                 for link in links.into_iter().take(8) {
                     let button = gtk::LinkButton::with_label(&link.url, &link.text);
+                    button.set_halign(gtk::Align::Start);
                     button.set_tooltip_text(Some(&link.url));
                     link_box.append(&button);
                 }
@@ -2192,30 +3093,82 @@ fn reader_picture(
         .can_shrink(true)
         .css_classes([class, "image-placeholder"])
         .build();
-    view.image_targets
-        .borrow_mut()
-        .entry(url.to_owned())
-        .or_default()
-        .push(picture.clone());
-    view.images.load(ImageRequest {
+    let request = ImageRequest {
         url: url.to_owned(),
         width,
         height,
         fit: Fit::Contain,
-    });
+    };
+    view.reader_image_targets
+        .borrow_mut()
+        .entry(request.clone())
+        .or_default()
+        .push(picture.clone());
+    view.images.load(request);
     picture
 }
 
 fn reader_label(text: &str, class: &str) -> gtk::Label {
     gtk::Label::builder()
         .label(text)
+        .hexpand(true)
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .max_width_chars(88)
         .selectable(true)
         .xalign(0.0)
         .yalign(0.0)
         .css_classes([class])
         .build()
+}
+
+fn install_label_link(label: &gtk::Label, url: &str, toast: &adw::ToastOverlay) {
+    label.set_cursor_from_name(Some("pointer"));
+    label.add_css_class("reader-link");
+    let click = gtk::GestureClick::new();
+    click.set_button(gtk::gdk::BUTTON_PRIMARY);
+    let url = url.to_owned();
+    let toast = toast.clone();
+    click.connect_released(move |_, _, _, _| open_external_url(&toast, &url));
+    label.add_controller(click);
+}
+
+fn install_smooth_wheel_scroll(scroller: &gtk::ScrolledWindow) {
+    scroller.set_kinetic_scrolling(true);
+    let controller = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE,
+    );
+    let adjustment = scroller.vadjustment();
+    let target_value = Rc::new(Cell::new(adjustment.value()));
+    let active_animation = Rc::new(RefCell::new(None::<adw::TimedAnimation>));
+    let widget = scroller.clone();
+    controller.connect_scroll(move |_, _, dy| {
+        let lower = adjustment.lower();
+        let upper = (adjustment.upper() - adjustment.page_size()).max(lower);
+        let target = (target_value.get() + dy * 112.0).clamp(lower, upper);
+        target_value.set(target);
+        if !gtk::Settings::default().is_some_and(|settings| settings.is_gtk_enable_animations()) {
+            adjustment.set_value(target);
+            return glib::Propagation::Stop;
+        }
+        if let Some(animation) = active_animation.borrow_mut().take() {
+            animation.pause();
+        }
+        let start = adjustment.value();
+        let animated_adjustment = adjustment.clone();
+        let animation = adw::TimedAnimation::new(
+            &widget,
+            start,
+            target,
+            180,
+            adw::CallbackAnimationTarget::new(move |value| animated_adjustment.set_value(value)),
+        );
+        animation.set_easing(adw::Easing::EaseOutCubic);
+        animation.play();
+        *active_animation.borrow_mut() = Some(animation);
+        glib::Propagation::Stop
+    });
+    scroller.add_controller(controller);
 }
 
 fn navigation_row(icon: &str, title: &str, tag: &str, count: Option<i64>) -> gtk::ListBoxRow {
@@ -2242,18 +3195,302 @@ fn navigation_row(icon: &str, title: &str, tag: &str, count: Option<i64>) -> gtk
     row
 }
 
-fn separator_row(title: &str) -> gtk::ListBoxRow {
-    let row = gtk::ListBoxRow::new();
-    row.set_activatable(false);
-    row.set_child(Some(
-        &gtk::Label::builder()
-            .label(title.to_uppercase())
-            .xalign(0.0)
-            .css_classes(["section-heading"])
-            .build(),
-    ));
+fn feed_navigation_row(view: &View, feed: &FeedRecord) -> gtk::ListBoxRow {
+    let row = navigation_row(
+        "application-rss+xml-symbolic",
+        &feed.display_name,
+        &format!("feed:{}", feed.stable_id),
+        None,
+    );
+    install_feed_context_menu(view, &row, feed);
+    let Some(icon_url) = feed_icon_url(feed) else {
+        return row;
+    };
+    let Some(content) = row
+        .child()
+        .and_then(|child| child.downcast::<gtk::Box>().ok())
+    else {
+        return row;
+    };
+    if let Some(generic) = content.first_child() {
+        content.remove(&generic);
+    }
+    let overlay = gtk::Overlay::new();
+    overlay.set_size_request(22, 22);
+    overlay.set_child(Some(&gtk::Image::from_icon_name(
+        "application-rss+xml-symbolic",
+    )));
+    let picture = gtk::Picture::builder()
+        .width_request(22)
+        .height_request(22)
+        .content_fit(gtk::ContentFit::Cover)
+        .can_shrink(true)
+        .opacity(0.0)
+        .css_classes(["feed-icon"])
+        .build();
+    overlay.add_overlay(&picture);
+    content.prepend(&overlay);
+    let request = ImageRequest {
+        url: icon_url,
+        width: 44,
+        height: 44,
+        fit: Fit::Cover,
+    };
+    if let Some(texture) = view.icon_textures.borrow().get(&request) {
+        picture.set_paintable(Some(texture));
+        picture.set_opacity(1.0);
+        picture.remove_css_class("image-placeholder");
+    } else {
+        view.icon_targets
+            .borrow_mut()
+            .entry(request.clone())
+            .or_default()
+            .push(picture);
+        view.icons.load(request);
+    }
     row
 }
+
+fn install_feed_context_menu(view: &View, row: &gtk::ListBoxRow, feed: &FeedRecord) {
+    let click = gtk::GestureClick::new();
+    click.set_button(3);
+    let row_for_popover = row.clone();
+    let window = view.window.clone();
+    let worker = view.worker.clone();
+    let feed_id = feed.stable_id.clone();
+    let feed_name = feed.display_name.clone();
+    click.connect_pressed(move |gesture, _, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let unsubscribe = gtk::Button::builder()
+            .label("Unsubscribe…")
+            .css_classes(["flat", "destructive-action"])
+            .build();
+        let popover = gtk::Popover::builder().has_arrow(true).child(&unsubscribe).build();
+        popover.set_parent(&row_for_popover);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        let popover_to_close = popover.clone();
+        let window = window.clone();
+        let worker = worker.clone();
+        let feed_id = feed_id.clone();
+        let feed_name = feed_name.clone();
+        unsubscribe.connect_clicked(move |_| {
+            popover_to_close.popdown();
+            let dialog = adw::AlertDialog::builder()
+                .heading(format!("Unsubscribe from {feed_name}?"))
+                .body("The feed and its locally stored articles will be removed. This cannot be undone.")
+                .build();
+            dialog.add_responses(&[("cancel", "Cancel"), ("unsubscribe", "Unsubscribe")]);
+            dialog.set_response_appearance(
+                "unsubscribe",
+                adw::ResponseAppearance::Destructive,
+            );
+            let worker = worker.clone();
+            let feed_id = feed_id.clone();
+            dialog.connect_response(Some("unsubscribe"), move |_, _| {
+                worker.send(Command::RemoveFeed(feed_id.clone()));
+            });
+            dialog.present(Some(&window));
+        });
+        popover.popup();
+    });
+    row.add_controller(click);
+}
+
+fn feed_icon_url(feed: &FeedRecord) -> Option<String> {
+    feed.favicon_url
+        .clone()
+        .or_else(|| feed.feed_image_url.clone())
+        .or_else(|| site_favicon_url(feed.site_url.as_deref()))
+}
+
+fn site_favicon_url(site_url: Option<&str>) -> Option<String> {
+    let mut site = url::Url::parse(site_url?).ok()?;
+    if !matches!(site.scheme(), "http" | "https") {
+        return None;
+    }
+    site.set_path("/favicon.ico");
+    site.set_query(None);
+    site.set_fragment(None);
+    Some(site.to_string())
+}
+
+fn feed_icon_discovery_page(feed: &FeedRecord) -> Option<String> {
+    if let Some(site_url) = &feed.site_url {
+        return Some(site_url.clone());
+    }
+    let mut url = url::Url::parse(&feed.normalized_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.to_string())
+}
+
+fn install_feed_drag(row: &gtk::ListBoxRow, feed_id: &str) {
+    let source = gtk::DragSource::builder()
+        .actions(gtk::gdk::DragAction::MOVE)
+        .build();
+    let feed_id = feed_id.to_owned();
+    source.connect_prepare(move |_, _, _| {
+        Some(gtk::gdk::ContentProvider::for_value(&feed_id.to_value()))
+    });
+    row.add_controller(source);
+}
+
+fn install_article_context_menu(
+    row: &gtk::ListBoxRow,
+    article_id: String,
+    is_unread: Rc<Cell<bool>>,
+    is_starred: Rc<Cell<bool>>,
+    worker: Worker,
+) {
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+    let menu_parent = row.clone();
+    gesture.connect_pressed(move |_, _, x, y| {
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        menu.set_margin_top(6);
+        menu.set_margin_bottom(6);
+        menu.set_margin_start(6);
+        menu.set_margin_end(6);
+        let star = gtk::Button::builder()
+            .label(if is_starred.get() {
+                "Remove Star"
+            } else {
+                "Star"
+            })
+            .halign(gtk::Align::Fill)
+            .build();
+        star.add_css_class("flat");
+        let read = gtk::Button::builder()
+            .label(if is_unread.get() {
+                "Mark as Read"
+            } else {
+                "Mark as Unread"
+            })
+            .halign(gtk::Align::Fill)
+            .build();
+        read.add_css_class("flat");
+        menu.append(&star);
+        menu.append(&read);
+        let popover = gtk::Popover::builder().autohide(true).child(&menu).build();
+        popover.set_parent(&menu_parent);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        let id = article_id.clone();
+        let worker_for_star = worker.clone();
+        let starred = Rc::clone(&is_starred);
+        let popup = popover.downgrade();
+        star.connect_clicked(move |_| {
+            worker_for_star.send(Command::SetStarred {
+                id: id.clone(),
+                starred: !starred.get(),
+            });
+            if let Some(popup) = popup.upgrade() {
+                popup.popdown();
+            }
+        });
+        let id = article_id.clone();
+        let worker_for_read = worker.clone();
+        let unread = Rc::clone(&is_unread);
+        let popup = popover.downgrade();
+        read.connect_clicked(move |_| {
+            worker_for_read.send(Command::SetRead {
+                id: id.clone(),
+                read: unread.get(),
+            });
+            if let Some(popup) = popup.upgrade() {
+                popup.popdown();
+            }
+        });
+        popover.connect_closed(|popover| popover.unparent());
+        popover.popup();
+    });
+    row.add_controller(gesture);
+}
+
+fn install_starred_context_menu(view: &Rc<View>, row: &gtk::ListBoxRow) {
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+    let weak_view = Rc::downgrade(view);
+    let menu_parent = row.clone();
+    gesture.connect_pressed(move |_, _, x, y| {
+        let Some(view) = weak_view.upgrade() else { return };
+        let button = gtk::Button::builder()
+            .label("Unstar All…")
+            .halign(gtk::Align::Fill)
+            .css_classes(["flat"])
+            .build();
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        menu.set_margin_top(6);
+        menu.set_margin_bottom(6);
+        menu.set_margin_start(6);
+        menu.set_margin_end(6);
+        menu.append(&button);
+        let popover = gtk::Popover::builder().autohide(true).child(&menu).build();
+        popover.set_parent(&menu_parent);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        let popup = popover.downgrade();
+        let weak_view = Rc::downgrade(&view);
+        button.connect_clicked(move |_| {
+            if let Some(popup) = popup.upgrade() {
+                popup.popdown();
+            }
+            let Some(view) = weak_view.upgrade() else { return };
+            let dialog = adw::AlertDialog::builder()
+                .heading("Unstar every article?")
+                .body("This removes every star from your library. Articles and read status are not changed.")
+                .build();
+            dialog.add_responses(&[("cancel", "Cancel"), ("unstar", "Unstar All")]);
+            dialog.set_response_appearance("unstar", adw::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+            let worker = view.worker.clone();
+            dialog.connect_response(Some("unstar"), move |_, _| {
+                worker.send(Command::UnstarAll);
+            });
+            dialog.present(Some(&view.window));
+        });
+        popover.connect_closed(|popover| popover.unparent());
+        popover.popup();
+    });
+    row.add_controller(gesture);
+}
+
+fn install_folder_drop(
+    row: &gtk::ListBoxRow,
+    folder_id: i64,
+    worker: Worker,
+    toast: adw::ToastOverlay,
+) {
+    let target = gtk::DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+    let highlight = row.clone();
+    target.connect_enter(move |_, _, _| {
+        highlight.add_css_class("drop-target-active");
+        gtk::gdk::DragAction::MOVE
+    });
+    let highlight = row.clone();
+    target.connect_leave(move |_| highlight.remove_css_class("drop-target-active"));
+    let highlight = row.clone();
+    target.connect_drop(move |_, value, _, _| {
+        highlight.remove_css_class("drop-target-active");
+        let Ok(feed_id) = value.get::<String>() else {
+            return false;
+        };
+        if !feed_id.starts_with("feed:v1:") {
+            return false;
+        }
+        worker.send(Command::MoveFeed {
+            id: feed_id,
+            folder_id: Some(folder_id),
+        });
+        toast.add_toast(adw::Toast::new("Feed moved to folder"));
+        true
+    });
+    row.add_controller(target);
+}
+
 fn scope_title(scope: &OwnedScope) -> &str {
     match scope {
         OwnedScope::Library => "Library",
@@ -2275,6 +3512,12 @@ fn relative_time(timestamp: Option<i64>) -> String {
             }
         })
         .unwrap_or_else(|| "Unknown time".into())
+}
+fn article_time(published_at: Option<i64>, inserted_at: i64) -> String {
+    published_at.map_or_else(
+        || format!("Added {}", relative_time(Some(inserted_at)).to_lowercase()),
+        |published| relative_time(Some(published)),
+    )
 }
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
@@ -2326,6 +3569,68 @@ fn settings_path() -> PathBuf {
     base.join("feedlizard/reader-text-size")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Appearance {
+    System,
+    Light,
+    Dark,
+}
+
+impl Appearance {
+    fn index(self) -> u32 {
+        match self {
+            Self::System => 0,
+            Self::Light => 1,
+            Self::Dark => 2,
+        }
+    }
+
+    fn from_index(index: u32) -> Self {
+        match index {
+            1 => Self::Light,
+            2 => Self::Dark,
+            _ => Self::System,
+        }
+    }
+}
+
+fn appearance_path() -> PathBuf {
+    settings_path().with_file_name("appearance")
+}
+
+fn load_appearance() -> Appearance {
+    match std::fs::read_to_string(appearance_path())
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("light") => Appearance::Light,
+        Ok("dark") => Appearance::Dark,
+        _ => Appearance::System,
+    }
+}
+
+fn save_appearance(appearance: Appearance) {
+    let path = appearance_path();
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_ok()
+    {
+        let value = match appearance {
+            Appearance::System => "system",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        };
+        let _ = std::fs::write(path, format!("{value}\n"));
+    }
+}
+
+fn apply_appearance(appearance: Appearance) {
+    adw::StyleManager::default().set_color_scheme(match appearance {
+        Appearance::System => adw::ColorScheme::Default,
+        Appearance::Light => adw::ColorScheme::ForceLight,
+        Appearance::Dark => adw::ColorScheme::ForceDark,
+    });
+}
+
 fn load_reader_text_size() -> f64 {
     std::fs::read_to_string(settings_path())
         .ok()
@@ -2372,12 +3677,15 @@ fn install_css() {
     provider.load_from_string(r#"
       .navigation-sidebar { padding: 8px; background: alpha(@view_fg_color, .025); }
       .navigation-sidebar row { border-radius: 9px; margin: 2px 0; }
+      .navigation-sidebar row.drop-target-active { background: alpha(@accent_color, .20); outline: 2px solid alpha(@accent_color, .65); outline-offset: -2px; }
       .navigation-row { padding: 9px 10px; }
+      .feed-icon { border-radius: 5px; }
       .section-heading { font-size: .72rem; font-weight: 700; letter-spacing: .08em; opacity: .55; padding: 20px 10px 6px; }
       .count-badge { border-radius: 999px; padding: 1px 8px; background: alpha(@accent_color, .15); color: @accent_color; font-weight: 600; }
       .article-list { background: @view_bg_color; }
       .article-list row { border-bottom: 1px solid alpha(@view_fg_color, .08); }
-      .article-row { padding: 14px 18px; }
+      .article-row { padding: 14px 18px; transition: opacity 140ms ease; }
+      .article-row-read { opacity: .62; }
       .article-meta, .reader-meta { color: alpha(@view_fg_color, .62); font-size: .88rem; }
       .article-title { font-size: 1.04rem; } .article-title-unread { font-size: 1.04rem; font-weight: 700; }
       .unread-dot { color: @accent_color; -gtk-icon-size: 9px; }
@@ -2388,6 +3696,7 @@ fn install_css() {
       .image-placeholder { background: alpha(@view_fg_color, .07); }
       .reader-page { padding: 52px 72px; }
       .reader-title { font-size: 2rem; font-weight: 750; line-height: 1.12; }
+      .reader-title:hover, .reader-link:hover { color: @accent_color; }
       .reader-content { margin-top: 18px; }
       .reader-hero, .reader-inline-image, .page-image { border-radius: 10px; }
       .reader-body { font-size: 1.12rem; line-height: 1.55; }
@@ -2397,8 +3706,21 @@ fn install_css() {
       .reader-code { font-family: monospace; background: alpha(@view_fg_color, .06); border-radius: 8px; padding: 14px; }
       .reader-links { margin-top: -8px; }
       .pages-shell { background: alpha(@view_fg_color, .035); }
-      .page-paper { margin: 28px 48px; padding: 52px 64px; border-radius: 5px; background: @view_bg_color; box-shadow: 0 3px 16px alpha(black, .14); }
+      .page-paper { margin: 18px 24px; padding: 38px 42px; border-radius: 5px; background: @view_bg_color; box-shadow: 0 3px 16px alpha(black, .14); }
       .pages-footer { padding: 10px 18px; border-top: 1px solid alpha(@view_fg_color, .08); }
+      .book-window, .book-environment { background: @window_bg_color; }
+      .book-controls { margin: 18px; padding: 8px 10px; border-radius: 12px; background: alpha(@window_bg_color, .94); box-shadow: 0 4px 22px alpha(black, .22); }
+      .book-bottom-navigation { margin: 24px; padding: 7px 12px; border-radius: 999px; background: alpha(@window_bg_color, .92); box-shadow: 0 4px 20px alpha(black, .20); }
+      .book-page-arrow { min-width: 44px; min-height: 44px; }
+      .book-title { font-weight: 650; }
+      .book-progress { color: alpha(@window_fg_color, .68); }
+      .book-spread { min-height: 690px; padding: 72px 38px 38px; }
+      .book-spread .page-paper { margin: 0; min-width: 420px; min-height: 590px; padding: 54px 58px; border-radius: 3px; }
+      .book-spread:not(.book-spread-single) .book-page-left { border-radius: 5px 1px 1px 5px; box-shadow: -8px 10px 30px alpha(black, .18), inset -12px 0 20px alpha(black, .045); }
+      .book-spread:not(.book-spread-single) .book-page-right { border-radius: 1px 5px 5px 1px; box-shadow: 8px 10px 30px alpha(black, .18), inset 12px 0 20px alpha(black, .035); }
+      .book-spread:not(.book-spread-single) .book-page-left { border-right: 1px solid alpha(@view_fg_color, .06); }
+      .book-spread:not(.book-spread-single) .book-page-right { border-left: 1px solid alpha(black, .08); }
+      .book-spread-single .page-paper { min-width: 460px; border-radius: 5px; box-shadow: 0 12px 36px alpha(black, .20); }
     "#);
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().expect("display"),
@@ -2409,7 +3731,10 @@ fn install_css() {
 
 #[cfg(test)]
 mod tests {
-    use super::format_snapshot_datetime;
+    use super::{
+        book_navigation_target, book_progress_label, format_beta_version, format_snapshot_datetime,
+        site_favicon_url,
+    };
     use chrono::{FixedOffset, TimeZone};
 
     #[test]
@@ -2417,5 +3742,39 @@ mod tests {
         let eastern = FixedOffset::west_opt(4 * 60 * 60).unwrap();
         let time = eastern.timestamp_opt(1_777_000_000, 0).unwrap();
         assert_eq!(format_snapshot_datetime(time), "April 23, 2026 at 11:06 PM");
+    }
+
+    #[test]
+    fn derives_private_favicon_fallback_from_site_origin() {
+        assert_eq!(
+            site_favicon_url(Some("https://example.com/news?view=all#latest")),
+            Some("https://example.com/favicon.ico".into())
+        );
+        assert_eq!(site_favicon_url(Some("file:///tmp/site")), None);
+        assert_eq!(site_favicon_url(None), None);
+    }
+
+    #[test]
+    fn book_navigation_respects_spreads_and_boundaries() {
+        assert_eq!(book_navigation_target(0, -1, true, 5), 0);
+        assert_eq!(book_navigation_target(0, 1, true, 5), 2);
+        assert_eq!(book_navigation_target(2, 1, true, 5), 4);
+        assert_eq!(book_navigation_target(4, 1, true, 5), 4);
+        assert_eq!(book_navigation_target(2, -1, true, 5), 0);
+        assert_eq!(book_navigation_target(2, 1, false, 5), 3);
+        assert_eq!(book_navigation_target(0, 1, false, 0), 0);
+    }
+
+    #[test]
+    fn book_progress_describes_spreads_and_single_pages() {
+        assert_eq!(book_progress_label(0, 5, true), "Pages 1–2 of 5");
+        assert_eq!(book_progress_label(4, 5, true), "Page 5 of 5");
+        assert_eq!(book_progress_label(2, 5, false), "Page 3 of 5");
+    }
+
+    #[test]
+    fn formats_semver_beta_for_about_without_changing_stable_versions() {
+        assert_eq!(format_beta_version("0.9.0-beta.12"), "0.9.0 Beta 12");
+        assert_eq!(format_beta_version("1.0.0"), "1.0.0");
     }
 }

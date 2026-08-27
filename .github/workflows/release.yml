@@ -1,0 +1,103 @@
+name: Beta release
+
+on:
+  push:
+    tags:
+      - "v0.*-beta.*"
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      display-version: ${{ steps.version.outputs.display-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - id: version
+        run: |
+          version="$(scripts/release-version.sh)"
+          display_version="$(printf '%s' "$version" | sed -E 's/-beta\.([0-9]+)$/ Beta \1/')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "display-version=$display_version" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: fedora:44
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y git rust cargo rustfmt clippy gcc pkgconf-pkg-config gtk4-devel libadwaita-devel sqlite-devel dbus-devel
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - run: cargo fmt --check
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --locked --release --workspace
+
+  flatpak:
+    needs: [metadata, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - name: Build release bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@401fe28a8384095fc1531b9d320b292f0ee45adb # v6.5
+        with:
+          manifest-path: flatpak/io.github.feedlizard.FeedLizard.yml
+          bundle: FeedLizard-${{ needs.metadata.outputs.version }}-${{ matrix.arch }}.flatpak
+          upload-artifact: false
+          arch: ${{ matrix.arch }}
+          branch: release
+          cache-key: feedlizard-release-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'flatpak/io.github.feedlizard.FeedLizard.yml', 'flatpak/cargo-sources.json') }}
+          verbose: true
+      - name: Upload release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: FeedLizard-${{ needs.metadata.outputs.version }}-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [metadata, flatpak]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: flatpak-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate checksums
+        run: cd release-assets && sha256sum FeedLizard-*.flatpak > SHA256SUMS
+      - name: Create prerelease
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.4.1
+        with:
+          prerelease: true
+          name: FeedLizard Linux ${{ needs.metadata.outputs.display-version }}
+          body_path: docs/BETA_RELEASE_NOTES.md
+          files: |
+            release-assets/FeedLizard-*.flatpak
+            release-assets/SHA256SUMS

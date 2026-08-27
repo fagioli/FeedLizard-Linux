@@ -10,13 +10,13 @@ pub const MAX_DOWNLOAD_BYTES: usize = 12 * 1024 * 1024;
 pub const MAX_SOURCE_PIXELS: u64 = 40_000_000;
 pub const MAX_DISK_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Fit {
     Cover,
     Contain,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Request {
     pub url: String,
     pub width: u32,
@@ -35,6 +35,7 @@ pub struct DecodedImage {
 pub enum ImageError {
     InvalidUrl,
     Network(String),
+    HttpStatus(u16),
     TooLarge,
     Unsupported,
     Cache(String),
@@ -45,6 +46,7 @@ impl fmt::Display for ImageError {
         match self {
             Self::InvalidUrl => write!(formatter, "invalid image URL"),
             Self::Network(value) => write!(formatter, "image request failed: {value}"),
+            Self::HttpStatus(status) => write!(formatter, "image request returned HTTP {status}"),
             Self::TooLarge => write!(formatter, "image exceeds safety limits"),
             Self::Unsupported => write!(formatter, "unsupported image"),
             Self::Cache(value) => write!(formatter, "image cache failed: {value}"),
@@ -62,12 +64,19 @@ pub struct ImageLoader {
 
 impl ImageLoader {
     pub fn new(cache_directory: PathBuf) -> Result<Self, ImageError> {
+        Self::new_with_timeout(cache_directory, Duration::from_secs(25))
+    }
+
+    pub fn new_with_timeout(
+        cache_directory: PathBuf,
+        timeout: Duration,
+    ) -> Result<Self, ImageError> {
         let client = Client::builder()
             .user_agent("FeedLizard/0.1 (Linux; image fetch)")
             .https_only(false)
             .redirect(reqwest::redirect::Policy::limited(5))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(25))
+            .connect_timeout(timeout.min(Duration::from_secs(10)))
+            .timeout(timeout)
             .build()
             .map_err(|error| ImageError::Network(error.to_string()))?;
         Ok(Self {
@@ -108,7 +117,7 @@ impl ImageLoader {
             .await
             .map_err(|error| ImageError::Network(error.to_string()))?;
         if !response.status().is_success() {
-            return Err(ImageError::Network(format!("HTTP {}", response.status())));
+            return Err(ImageError::HttpStatus(response.status().as_u16()));
         }
         if response
             .content_length()
@@ -182,6 +191,7 @@ fn decode(bytes: &[u8], request: &Request) -> Result<DecodedImage, ImageError> {
         format,
         ImageFormat::Avif
             | ImageFormat::Gif
+            | ImageFormat::Ico
             | ImageFormat::Jpeg
             | ImageFormat::Png
             | ImageFormat::WebP
@@ -269,5 +279,25 @@ mod tests {
         .unwrap();
         assert_eq!((image.width, image.height), (80, 60));
         assert_eq!(image.rgba.len(), 80 * 60 * 4);
+    }
+
+    #[test]
+    fn decodes_standard_favicon_ico() {
+        let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([93, 63, 211, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Ico)
+            .unwrap();
+        let decoded = decode(
+            bytes.get_ref(),
+            &Request {
+                url: "https://example.com/favicon.ico".into(),
+                width: 24,
+                height: 24,
+                fit: Fit::Contain,
+            },
+        )
+        .unwrap();
+        assert_eq!((decoded.width, decoded.height), (24, 24));
     }
 }

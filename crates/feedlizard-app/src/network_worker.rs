@@ -1,4 +1,5 @@
 use feedlizard_network::{CancellationToken, FetchPolicy, HttpClient};
+use feedlizard_reader::Document;
 use feedlizard_refresh::{AddFeedResult, RefreshConfig, RefreshCoordinator, RefreshSummary};
 use feedlizard_storage::Library;
 use std::{
@@ -12,14 +13,33 @@ pub enum Command {
     AddFeed(String),
     RefreshFeed(String),
     RefreshAll,
+    DiscoverArticleImages(Vec<(String, String)>),
+    DiscoverFavicons(Vec<(String, String)>),
+    ExtractArticle { article_id: String, url: String },
 }
 
 #[derive(Debug)]
 pub enum Event {
-    FeedAdded { feed_id: String, articles: usize },
+    FeedAdded {
+        feed_id: String,
+        articles: usize,
+    },
     DiscoveryCandidates(Vec<(String, Option<String>)>),
-    FeedRefreshed { inserted: usize, failed: bool },
+    FeedRefreshed {
+        inserted: usize,
+        failed: bool,
+    },
     RefreshComplete(RefreshSummary),
+    ArticleImagesDiscovered(Vec<(String, String)>),
+    FaviconsDiscovered(Vec<(String, String)>),
+    ArticleExtracted {
+        article_id: String,
+        document: Document,
+    },
+    ArticleExtractionFailed {
+        article_id: String,
+        error: String,
+    },
     Error(String),
 }
 
@@ -67,7 +87,7 @@ fn run(database_path: PathBuf, commands: Receiver<Command>, events: Sender<Event
             return;
         }
     };
-    let coordinator = RefreshCoordinator::new(client, RefreshConfig::default());
+    let coordinator = RefreshCoordinator::new(client.clone(), RefreshConfig::default());
     let mut library = match Library::open(database_path) {
         Ok(library) => library,
         Err(error) => {
@@ -107,6 +127,75 @@ fn run(database_path: PathBuf, commands: Receiver<Command>, events: Sender<Event
                 match runtime.block_on(coordinator.refresh_all(&mut library, &token)) {
                     Ok(result) => Event::RefreshComplete(result.summary),
                     Err(error) => Event::Error(error.to_string()),
+                }
+            }
+            Command::DiscoverArticleImages(candidates) => {
+                let images =
+                    runtime.block_on(coordinator.discover_article_images(candidates, &token));
+                for (article_id, image_url) in &images {
+                    if let Err(error) = library.set_article_image(article_id, image_url) {
+                        eprintln!("Could not persist discovered article image: {error}");
+                    }
+                }
+                Event::ArticleImagesDiscovered(images)
+            }
+            Command::DiscoverFavicons(candidates) => {
+                let client = client.clone();
+                let icons = runtime.block_on(async move {
+                    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(6));
+                    let mut tasks = tokio::task::JoinSet::new();
+                    for (feed_id, site_url) in candidates.into_iter().take(100) {
+                        let client = client.clone();
+                        let semaphore = semaphore.clone();
+                        tasks.spawn(async move {
+                            let _permit = semaphore.acquire_owned().await.ok()?;
+                            let token = CancellationToken::default();
+                            client
+                                .discover_site_icon(&site_url, &token)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|url| (feed_id, url))
+                        });
+                    }
+                    let mut icons = Vec::new();
+                    while let Some(result) = tasks.join_next().await {
+                        if let Ok(Some(icon)) = result {
+                            icons.push(icon);
+                        }
+                    }
+                    icons
+                });
+                for (feed_id, icon_url) in &icons {
+                    if let Err(error) = library.set_feed_favicon(feed_id, icon_url) {
+                        eprintln!("Could not persist discovered favicon: {error}");
+                    }
+                }
+                Event::FaviconsDiscovered(icons)
+            }
+            Command::ExtractArticle { article_id, url } => {
+                match runtime.block_on(client.fetch_article_html(&url, &token)) {
+                    Ok(response) => match feedlizard_reader::extract_article(
+                        &response.body,
+                        &response.final_url,
+                    ) {
+                        Ok(document) if !document.blocks.is_empty() => Event::ArticleExtracted {
+                            article_id,
+                            document,
+                        },
+                        Ok(_) => Event::ArticleExtractionFailed {
+                            article_id,
+                            error: "The full article did not contain readable content".into(),
+                        },
+                        Err(error) => Event::ArticleExtractionFailed {
+                            article_id,
+                            error: format!("Could not extract full article: {error}"),
+                        },
+                    },
+                    Err(error) => Event::ArticleExtractionFailed {
+                        article_id,
+                        error: format!("Could not load full article: {error}"),
+                    },
                 }
             }
         };

@@ -38,6 +38,7 @@ pub enum PageStyle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageChunk {
     Text { style: PageStyle, text: String },
+    Link { text: String, url: String },
     Image { url: String, alt: String },
 }
 
@@ -84,6 +85,24 @@ pub fn paginate(
                     &mut pages,
                     &mut used,
                 );
+                if let Block::Paragraph { links, .. } = block {
+                    for link in links.iter().take(8) {
+                        let link_height = measure(&link.text, PageStyle::Body).saturating_add(12);
+                        if used > 0 && used.saturating_add(link_height + block_gap) > page_height {
+                            pages.push(Page { chunks: Vec::new() });
+                            used = 0;
+                        }
+                        pages
+                            .last_mut()
+                            .expect("page exists")
+                            .chunks
+                            .push(PageChunk::Link {
+                                text: link.text.clone(),
+                                url: link.url.clone(),
+                            });
+                        used = used.saturating_add(link_height + block_gap);
+                    }
+                }
             }
         }
     }
@@ -187,6 +206,51 @@ pub fn parse_feed_html(input: &str, base_url: Option<&str>) -> Result<Document, 
     Ok(Document { blocks })
 }
 
+/// Extracts the most likely article body from a complete webpage and converts
+/// it into the same safe, semantic representation used by Pages.
+pub fn extract_article(input: &str, base_url: &str) -> Result<Document, ReaderError> {
+    if input.len() > MAX_HTML_BYTES {
+        return Err(ReaderError::InputTooLarge);
+    }
+    let base = Url::parse(base_url).map_err(|_| ReaderError::InvalidBaseUrl)?;
+    let html = Html::parse_document(input);
+    let selectors = [
+        "article",
+        "main",
+        "[role='main']",
+        ".article-content",
+        ".article-body",
+        ".entry-content",
+        ".post-content",
+        "#article-content",
+        "#article-body",
+    ];
+    let mut best = None;
+    for selector_text in selectors {
+        let Ok(selector) = scraper::Selector::parse(selector_text) else {
+            continue;
+        };
+        let candidate = html
+            .select(&selector)
+            .map(|element| (element.text().map(str::len).sum::<usize>(), element))
+            .filter(|(length, _)| *length >= 120)
+            .max_by_key(|(length, _)| *length);
+        if candidate.is_some() {
+            best = candidate;
+            break;
+        }
+    }
+    let mut blocks = Vec::new();
+    if let Some((_, element)) = best {
+        collect_blocks(*element, Some(&base), &mut blocks)?;
+    } else if let Ok(selector) = scraper::Selector::parse("body")
+        && let Some(body) = html.select(&selector).next()
+    {
+        collect_blocks(*body, Some(&base), &mut blocks)?;
+    }
+    Ok(Document { blocks })
+}
+
 fn collect_blocks(
     node: ego_tree::NodeRef<'_, Node>,
     base: Option<&Url>,
@@ -195,13 +259,32 @@ fn collect_blocks(
     if blocks.len() >= MAX_BLOCKS {
         return Err(ReaderError::TooManyBlocks);
     }
+    if let Some(value) = node.value().as_text() {
+        let text = clean_text(value);
+        if !text.is_empty() {
+            blocks.push(Block::Paragraph {
+                text,
+                links: Vec::new(),
+            });
+        }
+        return Ok(());
+    }
     let Some(element) = node.value().as_element() else {
         return Ok(());
     };
     let name = element.name();
     if matches!(
         name,
-        "script" | "style" | "noscript" | "iframe" | "object" | "embed"
+        "script"
+            | "style"
+            | "noscript"
+            | "iframe"
+            | "object"
+            | "embed"
+            | "nav"
+            | "aside"
+            | "footer"
+            | "form"
     ) {
         return Ok(());
     }
@@ -239,6 +322,17 @@ fn collect_blocks(
                 blocks.push(Block::Image {
                     url: source,
                     alt: clean_text(element.attr("alt").unwrap_or("Article image")),
+                });
+            }
+        }
+        "a" => {
+            let content = text();
+            if !content.is_empty()
+                && let Some(url) = element.attr("href").and_then(|value| safe_url(value, base))
+            {
+                blocks.push(Block::Paragraph {
+                    text: content.clone(),
+                    links: vec![Link { text: content, url }],
                 });
             }
         }
@@ -327,6 +421,50 @@ mod tests {
     }
 
     #[test]
+    fn preserves_plain_text_feed_summaries() {
+        let document = parse_feed_html(
+            "A publisher-provided summary with no HTML wrapper.",
+            Some("https://example.com/article"),
+        )
+        .unwrap();
+        assert_eq!(
+            document.blocks,
+            vec![Block::Paragraph {
+                text: "A publisher-provided summary with no HTML wrapper.".into(),
+                links: vec![]
+            }]
+        );
+    }
+
+    #[test]
+    fn preserves_standalone_source_links() {
+        let document = parse_feed_html(
+            "<div>Read more: <a href='/source'>Source</a></div>",
+            Some("https://example.com/story"),
+        )
+        .unwrap();
+        assert!(document.blocks.iter().any(|block| matches!(
+            block,
+            Block::Paragraph { links, .. }
+                if links.iter().any(|link| link.text == "Source" && link.url == "https://example.com/source")
+        )));
+    }
+
+    #[test]
+    fn extracts_article_body_without_navigation_or_footer() {
+        let document = extract_article(
+            "<html><body><nav>Sections</nav><article><h1>Story</h1><p>This is the complete article body with enough meaningful text to qualify as readable content for the Pages reader. It contains additional context and detail for readers.</p><a href='/source'>Source</a></article><footer>Copyright</footer></body></html>",
+            "https://example.com/news/story",
+        )
+        .unwrap();
+        let rendered = format!("{document:?}");
+        assert!(rendered.contains("complete article body"));
+        assert!(rendered.contains("https://example.com/source"));
+        assert!(!rendered.contains("Sections"));
+        assert!(!rendered.contains("Copyright"));
+    }
+
+    #[test]
     fn rejects_oversized_input() {
         assert_eq!(
             parse_feed_html(&"x".repeat(MAX_HTML_BYTES + 1), None),
@@ -348,5 +486,22 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.len() >= 3);
         assert!(first.iter().all(|page| !page.chunks.is_empty()));
+    }
+
+    #[test]
+    fn pagination_preserves_safe_article_links() {
+        let document = Document {
+            blocks: vec![Block::Paragraph {
+                text: "Read the source".into(),
+                links: vec![Link {
+                    text: "Source".into(),
+                    url: "https://example.com/source".into(),
+                }],
+            }],
+        };
+        let pages = paginate(&document, 200, 8, 80, |text, _| text.len() as u32);
+        assert!(pages.iter().flat_map(|page| &page.chunks).any(|chunk| {
+            matches!(chunk, PageChunk::Link { text, url } if text == "Source" && url == "https://example.com/source")
+        }));
     }
 }

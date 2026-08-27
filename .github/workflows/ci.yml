@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: dnf install -y git rust cargo rustfmt clippy gcc pkgconf-pkg-config gtk4-devel libadwaita-devel sqlite-devel dbus-devel
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
       - name: Format
         run: cargo fmt --check
       - name: Test workspace
@@ -43,6 +43,6 @@ jobs:
         run: |
           dnf install -y git rust cargo gcc cargo-deny
           cargo install cargo-audit --locked
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
       - run: cargo audit
       - run: cargo deny check

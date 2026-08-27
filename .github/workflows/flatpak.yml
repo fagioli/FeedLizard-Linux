@@ -1,4 +1,4 @@
-name: Flatpak
+name: Flatpak validation
 
 on:
   workflow_dispatch:
@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  bundle:
-    name: ${{ matrix.arch }} bundle
+  validate:
+    name: ${{ matrix.arch }} manifest
     strategy:
       fail-fast: false
       matrix:
@@ -31,13 +31,13 @@ jobs:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
     steps:
-      - uses: actions/checkout@v7
-      - name: Build bundle
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - name: Validate Flatpak build
+        uses: flatpak/flatpak-github-actions/flatpak-builder@401fe28a8384095fc1531b9d320b292f0ee45adb # v6.5
         with:
           manifest-path: flatpak/io.github.feedlizard.FeedLizard.yml
-          bundle: FeedLizard-${{ matrix.arch }}.flatpak
-          artifact-name: FeedLizard-${{ matrix.arch }}.flatpak
+          build-bundle: false
           arch: ${{ matrix.arch }}
+          branch: release
           cache-key: feedlizard-flatpak-${{ matrix.arch }}-${{ github.sha }}
           verbose: true

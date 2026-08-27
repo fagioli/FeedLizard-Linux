@@ -24,7 +24,7 @@ modules:
       - install -Dm755 target/release/feedlizard /app/bin/feedlizard
       - install -Dm644 data/io.github.feedlizard.FeedLizard.desktop /app/share/applications/io.github.feedlizard.FeedLizard.desktop
       - install -Dm644 data/io.github.feedlizard.FeedLizard.metainfo.xml /app/share/metainfo/io.github.feedlizard.FeedLizard.metainfo.xml
-      - install -Dm644 data/io.github.feedlizard.FeedLizard.svg /app/share/icons/hicolor/scalable/apps/io.github.feedlizard.FeedLizard.svg
+      - install -Dm644 data/io.github.feedlizard.FeedLizard.png /app/share/icons/hicolor/512x512/apps/io.github.feedlizard.FeedLizard.png
     sources:
       - cargo-sources.json
       - type: dir

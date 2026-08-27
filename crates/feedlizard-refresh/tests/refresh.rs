@@ -120,6 +120,38 @@ fn coordinator(global: usize, per_host: usize) -> RefreshCoordinator {
 }
 
 #[tokio::test]
+async fn article_image_discovery_uses_bounded_webpage_metadata_path() {
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let base = server(
+        |request| {
+            assert_eq!(request.path, "/article");
+            response(
+                200,
+                "text/html",
+                r#"<html><head><meta property="og:image" content="/media/hero.jpg"></head></html>"#
+                    .into(),
+            )
+        },
+        active,
+        peak,
+    )
+    .await;
+    let service = coordinator(6, 2);
+    let token = CancellationToken::default();
+    let images = service
+        .discover_article_images(
+            vec![("article:v1:test".into(), format!("{base}/article"))],
+            &token,
+        )
+        .await;
+    assert_eq!(
+        images,
+        vec![("article:v1:test".into(), format!("{base}/media/hero.jpg"))]
+    );
+}
+
+#[tokio::test]
 async fn refresh_persists_validators_uses_304_and_preserves_articles() {
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
@@ -362,6 +394,7 @@ async fn add_feed_and_discovery_use_production_paths() {
     let base_for_handler = base_cell.clone();
     let base = server(move |request| match request.path.as_str() {
         "/feed" => response(200, "application/rss+xml", rss("Added", 4)),
+        "/dated" => response(200, "application/rss+xml", "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>Dated</title><link>https://example.test</link><item><guid>old</guid><title>Old</title><pubDate>Wed, 21 Oct 2015 07:28:00 GMT</pubDate></item><item><guid>current</guid><title>Current</title></item></channel></rss>".into()),
         "/page" => response(200, "text/html", r#"<!doctype html><html><head><link rel="alternate" type="application/rss+xml" href="/feed" title="Main"></head></html>"#.into()),
         _ => response(404, "text/plain", base_for_handler.lock().unwrap().clone()),
     }, active, peak).await;
@@ -378,6 +411,15 @@ async fn add_feed_and_discovery_use_production_paths() {
         feedlizard_refresh::AddFeedResult::Added { .. }
     ));
     assert_eq!(library.stats().unwrap().articles, 4);
+    let dated = service
+        .add_url(&mut library, &format!("{base}/dated"), &token)
+        .await
+        .unwrap();
+    let feedlizard_refresh::AddFeedResult::Added { ingest, .. } = dated else {
+        panic!()
+    };
+    assert_eq!(ingest.inserted, 1);
+    assert_eq!(library.stats().unwrap().articles, 5);
     let discovered = service
         .add_url(&mut library, &format!("{base}/page"), &token)
         .await

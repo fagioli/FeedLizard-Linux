@@ -639,10 +639,11 @@ fn descendants<'a, 'input>(
     key: &'a str,
 ) -> impl Iterator<Item = Node<'a, 'input>> {
     node.descendants()
-        .filter(move |n| n.is_element() && name(*n) == key)
+        .filter(move |n| n.is_element() && name(*n).eq_ignore_ascii_case(key))
 }
 fn child<'a, 'input>(node: Node<'a, 'input>, key: &str) -> Option<Node<'a, 'input>> {
-    node.children().find(|n| n.is_element() && name(*n) == key)
+    node.children()
+        .find(|n| n.is_element() && name(*n).eq_ignore_ascii_case(key))
 }
 fn child_text(node: Node<'_, '_>, key: &str) -> Option<String> {
     child(node, key).and_then(node_text)
