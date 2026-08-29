@@ -36,7 +36,7 @@ network work. A persistent `gdbus monitor` observes service availability and
 Installation after the plugin has an authorized public repository:
 
 ```sh
-omarchy plugin add https://github.com/feedlizard/feedlizard-omarchy.git --enable
+omarchy plugin add <authorized-plugin-repository> --enable
 ```
 
 Omarchy presents its normal unsandboxed-plugin warning and confirmation. Git
@@ -44,16 +44,35 @@ installations update with `omarchy plugin update io.github.feedlizard.bar` and
 are removed with `omarchy plugin remove io.github.feedlizard.bar`. FeedLizard
 does not copy files into `~/.config/omarchy` or implement an updater.
 
-The repository URL above is the intended publication location, not a claim
-that it has already been published. Official builds should set
+No standalone plugin repository has been authorized or published yet. Official
+builds should set
 `FEEDLIZARD_OMARCHY_PLUGIN_REPOSITORY` only after that repository exists.
 
 ## Detection and status
 
 The GTK Settings integration row appears only when the inherited environment
-contains an absolute `OMARCHY_PATH`, or `XDG_CURRENT_DESKTOP` explicitly names
-Omarchy. Detection is local, one-shot, and causes no network or filesystem
-probe. Non-Omarchy systems load no QML and start no Omarchy process.
+contains the production marker `OMARCHY_PATH=/usr/share/omarchy` (an optional
+trailing slash is accepted). Current Omarchy initializes this exact value for
+production sessions. Arch, Hyprland, Wayland, themes, and desktop-name guesses
+are deliberately insufficient. Detection is local, one-shot, and causes no
+network or filesystem probe. Fedora Flatpak validation confirmed that Flatpak
+forwards this inherited variable without requiring a filesystem permission or
+an override. Non-Omarchy systems load no QML and start no Omarchy process.
+
+Current Omarchy installs a third-party plugin from a Git repository with a
+root `manifest.json`, shows an unsandboxed-code warning, and asks for host-side
+confirmation. FeedLizard cannot invoke that installer from its Flatpak without
+the broad `org.freedesktop.Flatpak` HostCommand permission. FeedLizard does not
+request that permission and has no home-directory access. Settings therefore
+offers a copyable official command after the standalone repository is actually
+published; installation, verification, update, and removal remain owned by
+Omarchy. Until publication, Settings truthfully reports that installation is
+not available rather than claiming success.
+
+Current upstream references:
+
+- <https://github.com/basecamp/omarchy/blob/quattro/manual/32-shell-plugins.md>
+- <https://github.com/basecamp/omarchy/blob/quattro/shell/README.md>
 
 The manifest and helper can be validated on any Linux system. On August 26,
 2026, the official validator from Omarchy `quattro` commit

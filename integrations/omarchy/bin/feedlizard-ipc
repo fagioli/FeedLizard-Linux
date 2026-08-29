@@ -2,6 +2,8 @@
 """Narrow host-side adapter for FeedLizard's session D-Bus interface."""
 
 import ast
+import os
+import shutil
 import subprocess
 import sys
 
@@ -54,6 +56,34 @@ def monitor() -> int:
     ).returncode
 
 
+def launch() -> int:
+    """Launch FeedLizard's explicit Omarchy presentation without a shell."""
+    command = None
+    flatpak = shutil.which("flatpak")
+    if flatpak:
+        installed = subprocess.run(
+            [flatpak, "info", "io.github.feedlizard.FeedLizard"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if installed.returncode == 0:
+            command = [flatpak, "run", "io.github.feedlizard.FeedLizard", "--omarchy"]
+    if command is None and (binary := shutil.which("feedlizard")):
+        command = [binary, "--omarchy"]
+    if command is None:
+        return 127
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["state"]:
         raise SystemExit(state())
@@ -61,4 +91,6 @@ if __name__ == "__main__":
         raise SystemExit(call(sys.argv[2]))
     if sys.argv[1:] == ["monitor"]:
         raise SystemExit(monitor())
+    if sys.argv[1:] == ["launch"]:
+        raise SystemExit(launch())
     raise SystemExit(2)

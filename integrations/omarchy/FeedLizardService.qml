@@ -37,8 +37,7 @@ Item {
   }
 
   function openFeedLizard() {
-    if (available) invoke("OpenFeedLizard")
-    else if (!launchProcess.running) launchProcess.running = true
+    if (!launchProcess.running) launchProcess.running = true
   }
 
   function openUnread() { invoke("OpenUnread") }
@@ -94,6 +93,6 @@ Item {
   Process {
     id: launchProcess
     running: false
-    command: ["gtk-launch", "io.github.feedlizard.FeedLizard"]
+    command: [root.helperPath, "launch"]
   }
 }

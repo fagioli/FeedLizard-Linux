@@ -1,19 +1,9 @@
 pub fn detected() -> bool {
-    detected_from(
-        std::env::var("OMARCHY_PATH").ok().as_deref(),
-        std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
-    )
+    detected_from(std::env::var("OMARCHY_PATH").ok().as_deref())
 }
 
-fn detected_from(omarchy_path: Option<&str>, desktop: Option<&str>) -> bool {
-    omarchy_path.is_some_and(|path| {
-        let path = path.trim();
-        !path.is_empty() && path.starts_with('/')
-    }) || desktop.is_some_and(|value| {
-        value
-            .split([':', ';'])
-            .any(|part| part.trim().eq_ignore_ascii_case("omarchy"))
-    })
+fn detected_from(omarchy_path: Option<&str>) -> bool {
+    omarchy_path.is_some_and(|path| path.trim().trim_end_matches('/') == "/usr/share/omarchy")
 }
 
 pub fn install_command() -> Option<String> {
@@ -26,11 +16,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detection_is_confident_and_non_invasive() {
-        assert!(detected_from(Some("/usr/share/omarchy"), None));
-        assert!(detected_from(None, Some("Hyprland:Omarchy")));
-        assert!(!detected_from(None, Some("GNOME")));
-        assert!(!detected_from(Some(""), None));
-        assert!(!detected_from(Some("relative/path"), None));
+    fn detection_requires_the_production_omarchy_marker() {
+        assert!(detected_from(Some("/usr/share/omarchy")));
+        assert!(detected_from(Some(" /usr/share/omarchy/ ")));
+        assert!(!detected_from(None));
+        assert!(!detected_from(Some("")));
+        assert!(!detected_from(Some("/tmp/omarchy")));
+        assert!(!detected_from(Some("relative/path")));
     }
 }

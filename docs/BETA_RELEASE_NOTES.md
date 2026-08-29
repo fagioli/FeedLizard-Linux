@@ -9,6 +9,10 @@ that does not work as expected.
   navigation responsiveness, and contextual feed/article actions.
 - Added bounded favicon failure backoff so blocked or broken publishers do not
   cause repeated image requests during a session.
+- Added an optional compact Omarchy companion with shared FeedLizard data,
+  keyboard controls, unread activity visualization, preview, and refresh.
+- Added explicit `--omarchy` launch support and documented the confirmed
+  Omarchy plugin installation workflow without weakening the Flatpak sandbox.
 - Architecture-specific Flatpak bundles for x86-64 and aarch64.
 
 ## Known validation limits

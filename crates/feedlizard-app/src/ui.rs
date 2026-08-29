@@ -1338,8 +1338,8 @@ fn show_settings(view: &Rc<View>) {
             .title("Integrations")
             .build();
         let omarchy_row = adw::ActionRow::builder()
-            .title("Omarchy Integration")
-            .subtitle("Add FeedLizard to your Omarchy bar for unread counts and quick access")
+            .title("FeedLizard for Omarchy")
+            .subtitle("Add a compact RSS companion for unread counts and quick actions")
             .activatable(true)
             .build();
         omarchy_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -1401,12 +1401,12 @@ fn format_beta_version(version: &str) -> String {
 fn show_omarchy_integration(view: &Rc<View>) {
     let command = omarchy::install_command();
     let body = if command.is_some() {
-        "Omarchy will show its normal security warning and ask you to approve the plugin. FeedLizard never writes to your Omarchy configuration directly."
+        "Copy the supported install command, then run it on the host. Omarchy will show its normal security warning and ask you to approve the plugin. FeedLizard never bypasses that confirmation or writes to your Omarchy configuration directly."
     } else {
-        "The official plugin source is prepared, but its public repository has not been published yet. FeedLizard will use Omarchy’s normal confirmed installation workflow when it becomes available."
+        "The compact FeedLizard Omarchy companion is ready, but its standalone plugin repository has not been published yet. Once available, installation will use Omarchy’s normal confirmed plugin workflow."
     };
     let dialog = adw::AlertDialog::builder()
-        .heading("Omarchy Integration")
+        .heading("FeedLizard for Omarchy")
         .body(body)
         .build();
     dialog.add_response("close", "Close");
@@ -3541,7 +3541,7 @@ fn strip_html(input: &str) -> String {
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
-fn database_path() -> PathBuf {
+pub(crate) fn database_path() -> PathBuf {
     std::env::var_os("FEEDLIZARD_DB_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| {

@@ -3,31 +3,41 @@
 An optional, lightweight FeedLizard bar widget for Omarchy's Quickshell-based
 shell. It displays the unread count and a bounded folder summary, then delegates
 Open, Open Unread, and Refresh to FeedLizard over a narrow session D-Bus API.
+The widget's primary launch action explicitly requests FeedLizard's compact
+Omarchy companion with `feedlizard --omarchy` (or the equivalent Flatpak
+command). The full application and companion share one FeedLizard library.
 
 ## Requirements
 
 - Omarchy quattro plugin architecture (`schemaVersion: 1`)
 - Quickshell 0.3.x as supplied by current Omarchy
 - FeedLizard Linux with integration protocol version 1
-- `gdbus`, Python 3, and `gtk-launch` from the normal Omarchy environment
+- `gdbus` and Python 3 from the normal Omarchy environment
 
 ## Installation
 
-After this source is published in its authorized repository:
+Install FeedLizard first. To run the companion directly without installing the
+bar plugin:
 
 ```sh
-omarchy plugin add https://github.com/feedlizard/feedlizard-omarchy.git --enable
+flatpak run io.github.feedlizard.FeedLizard --omarchy
 ```
 
-Omarchy displays its normal warning because plugins execute as host-side shell
-code. Review and approve it there. FeedLizard never writes Omarchy configuration.
-
-For development from this checkout:
+The plugin currently lives inside the FeedLizard Linux repository rather than a
+standalone plugin repository. Clone the source, then use Omarchy's supported
+local-plugin workflow:
 
 ```sh
+git clone https://github.com/fagioli/FeedLizard-Linux.git
+cd FeedLizard-Linux
 omarchy plugin validate ./integrations/omarchy
 omarchy plugin add ./integrations/omarchy --enable
 ```
+
+Omarchy displays its normal warning because plugins execute as host-side shell
+code. Review and approve it there. FeedLizard never writes Omarchy configuration
+or bypasses this confirmation. A one-command remote install is not yet available
+because Omarchy expects the plugin manifest at the root of its Git repository.
 
 Update and removal are managed by Omarchy:
 

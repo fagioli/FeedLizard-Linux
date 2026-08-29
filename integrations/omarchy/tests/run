@@ -3,6 +3,7 @@ import json
 import pathlib
 import py_compile
 import sys
+import tempfile
 
 root = pathlib.Path(__file__).resolve().parent.parent
 manifest = json.loads((root / "manifest.json").read_text())
@@ -13,12 +14,15 @@ assert manifest["entryPoints"]["barWidget"] == "FeedLizard.qml"
 assert (root / manifest["entryPoints"]["barWidget"]).is_file()
 
 helper = root / "bin" / "feedlizard-ipc"
-py_compile.compile(str(helper), doraise=True)
+with tempfile.TemporaryDirectory() as directory:
+    py_compile.compile(str(helper), cfile=str(pathlib.Path(directory) / "feedlizard-ipc.pyc"), doraise=True)
 source = helper.read_text()
 for method in ("OpenFeedLizard", "OpenUnread", "Refresh"):
     assert method in source
-for forbidden in ("nsec", "sqlite3", "SELECT ", "subprocess.Popen", "shell=True"):
+for forbidden in ("nsec", "sqlite3", "SELECT ", "shell=True"):
     assert forbidden not in source
+assert '"--omarchy"' in source
+assert 'sys.argv[1:] == ["launch"]' in source
 
 qml = (root / "FeedLizardService.qml").read_text()
 assert "Timer {" not in qml
@@ -26,5 +30,6 @@ assert "gdbus" not in qml
 assert "feedlizard-ipc" in qml
 assert "UnreadChanged" in qml
 assert "Qt.resolvedUrl" in qml
+assert '[root.helperPath, "launch"]' in qml
 
 print("FeedLizard Omarchy source checks passed")

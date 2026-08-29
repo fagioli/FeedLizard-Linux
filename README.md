@@ -224,6 +224,58 @@ has no broad host-filesystem permission; GTK file dialogs and external URLs use
 desktop portals. The official manifest sets the voluntary Lightning support
 address, while ordinary source builds and forks leave it unset.
 
+## Omarchy companion
+
+FeedLizard includes an optional compact, keyboard-driven companion for Omarchy.
+It uses the same FeedLizard database and refresh engine as the complete reader;
+it never creates a second subscription library. Installing FeedLizard does not
+silently enable the integration, and ordinary launches always open the complete
+GTK application.
+
+To run the companion directly from the Flatpak, including for development on a
+non-Omarchy Linux desktop:
+
+```sh
+flatpak run io.github.feedlizard.FeedLizard --omarchy
+```
+
+For a native development build:
+
+```sh
+cargo run -p feedlizard-app -- --omarchy
+```
+
+On Omarchy, clone this repository and ask Omarchy to validate and install the
+contained plugin. Omarchy will show its normal host-code warning and require
+confirmation:
+
+```sh
+git clone https://github.com/fagioli/FeedLizard-Linux.git
+cd FeedLizard-Linux
+omarchy plugin validate ./integrations/omarchy
+omarchy plugin add ./integrations/omarchy --enable
+```
+
+The plugin launches the companion, shows unread information through a bounded
+D-Bus interface, and delegates refresh/open actions to FeedLizard. It never
+reads SQLite or secrets directly. Update, disable, enable, and remove it through
+Omarchy:
+
+```sh
+omarchy plugin update io.github.feedlizard.bar
+omarchy plugin disable io.github.feedlizard.bar
+omarchy plugin enable io.github.feedlizard.bar
+omarchy plugin remove io.github.feedlizard.bar
+```
+
+Because the plugin currently lives in this repository's
+`integrations/omarchy` subdirectory, there is not yet a one-command remote
+plugin install. FeedLizard's Flatpak deliberately does not request broad host
+command or home-directory permissions to bypass Omarchy's confirmation model.
+See [`integrations/omarchy/README.md`](integrations/omarchy/README.md) and
+[`docs/OMARCHY_MODE_ARCHITECTURE.md`](docs/OMARCHY_MODE_ARCHITECTURE.md) for the
+contract and current runtime-validation status.
+
 ## Privacy and ownership
 
 FeedLizard requires no account and contains no telemetry or advertising. The
