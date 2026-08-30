@@ -1,4 +1,4 @@
-use crate::{error::CoreError, identity::normalize_url, parser::FeedFormat};
+use crate::{error::CoreError, parser::FeedFormat};
 use roxmltree::{Document, Node};
 use url::Url;
 
@@ -213,8 +213,20 @@ fn attribute<'input>(node: Node<'input, 'input>, key: &str) -> Option<&'input st
         .map(|a| a.value())
 }
 fn web_url(value: &str) -> Option<String> {
-    let url = Url::parse(value.trim()).ok()?;
-    matches!(url.scheme(), "http" | "https").then(|| normalize_url(url.as_str()))
+    let mut url = Url::parse(value.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    url.set_fragment(None);
+    if (url.scheme() == "https" && url.port() == Some(443))
+        || (url.scheme() == "http" && url.port() == Some(80))
+    {
+        let _ = url.set_port(None);
+    }
+    // Keep the publisher's path byte-for-byte. A trailing slash can select a
+    // different server resource, particularly when the URL also has a query.
+    // Feed identity is normalized separately by feed_id/normalized_url.
+    Some(url.to_string())
 }
 fn escape(value: &str) -> String {
     value

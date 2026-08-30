@@ -92,7 +92,6 @@ pub enum ArticleScope<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageCursor {
-    pub before_is_undated: bool,
     pub before_timestamp: i64,
     pub before_id: String,
 }

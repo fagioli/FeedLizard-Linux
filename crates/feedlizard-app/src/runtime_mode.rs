@@ -16,19 +16,25 @@ impl Launch {
     }
 
     fn from_inputs(args: impl IntoIterator<Item = String>, environment: Option<String>) -> Self {
-        let mut explicit = false;
+        let mut explicit_omarchy = false;
+        let mut explicit_standard = false;
         let gtk_args = args
             .into_iter()
             .filter(|argument| {
                 if argument == "--omarchy" {
-                    explicit = true;
+                    explicit_omarchy = true;
+                    false
+                } else if argument == "--standard" {
+                    explicit_standard = true;
                     false
                 } else {
                     true
                 }
             })
             .collect();
-        let mode = if explicit || environment.as_deref() == Some("1") {
+        let mode = if explicit_standard {
+            RuntimeMode::Standard
+        } else if explicit_omarchy || environment.as_deref() == Some("1") {
             RuntimeMode::Omarchy
         } else {
             RuntimeMode::Standard
@@ -78,5 +84,12 @@ mod tests {
             launch(&["feedlizard", "--omarchy"], Some("0")).mode,
             RuntimeMode::Omarchy
         );
+    }
+
+    #[test]
+    fn internal_standard_argument_overrides_omarchy_environment() {
+        let result = launch(&["feedlizard", "--standard"], Some("1"));
+        assert_eq!(result.mode, RuntimeMode::Standard);
+        assert_eq!(result.gtk_args, ["feedlizard"]);
     }
 }

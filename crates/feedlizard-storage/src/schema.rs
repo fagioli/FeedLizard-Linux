@@ -2,7 +2,7 @@ use crate::error::StorageError;
 use rusqlite::Connection;
 use std::time::Duration;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE folders (
@@ -85,6 +85,30 @@ ALTER TABLE feeds ADD COLUMN last_refresh_error TEXT;
 ALTER TABLE feeds ADD COLUMN effective_fetch_url TEXT;
 "#;
 
+// Earlier beta builds could persist articles before all publisher date formats
+// were understood. Conditional requests then kept those rows undated forever.
+// Clear validators once for affected feeds so their next ordinary refresh can
+// safely reparse the current document. No subscriptions or article state move.
+const MIGRATION_3: &str = r#"
+UPDATE feeds
+SET etag = NULL, last_modified = NULL
+WHERE EXISTS (
+    SELECT 1 FROM articles
+    WHERE articles.feed_stable_id = feeds.stable_id
+      AND articles.published_at IS NULL
+      AND articles.updated_at IS NULL
+);
+
+DROP INDEX articles_feed_order_idx;
+DROP INDEX articles_library_order_idx;
+DROP INDEX articles_unread_order_idx;
+DROP INDEX articles_starred_order_idx;
+CREATE INDEX articles_feed_order_idx ON articles(feed_stable_id, COALESCE(published_at, updated_at, inserted_at) DESC, stable_id DESC);
+CREATE INDEX articles_library_order_idx ON articles(COALESCE(published_at, updated_at, inserted_at) DESC, stable_id DESC);
+CREATE INDEX articles_unread_order_idx ON articles(is_read, COALESCE(published_at, updated_at, inserted_at) DESC, stable_id DESC);
+CREATE INDEX articles_starred_order_idx ON articles(is_starred, COALESCE(published_at, updated_at, inserted_at) DESC, stable_id DESC);
+"#;
+
 pub(crate) fn configure(connection: &Connection) -> Result<(), StorageError> {
     connection
         .busy_timeout(Duration::from_secs(5))
@@ -119,6 +143,12 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
         .map_err(|error| StorageError::Migration(error.to_string()))?;
     if version == 1 {
         apply_migration(connection, 2, MIGRATION_2)?;
+    }
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| StorageError::Migration(error.to_string()))?;
+    if version == 2 {
+        apply_migration(connection, 3, MIGRATION_3)?;
     }
     Ok(())
 }
@@ -165,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn version_one_upgrades_to_version_two_transactionally() {
+    fn version_one_upgrades_to_current_schema_transactionally() {
         let mut connection = Connection::open_in_memory().unwrap();
         configure(&connection).unwrap();
         apply_migration(&mut connection, 1, MIGRATION_1).unwrap();
@@ -180,6 +210,43 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!((version, columns), (2, 5));
+        assert_eq!((version, columns), (3, 5));
+    }
+
+    #[test]
+    fn version_three_refetches_only_feeds_with_undated_articles() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        configure(&connection).unwrap();
+        apply_migration(&mut connection, 1, MIGRATION_1).unwrap();
+        apply_migration(&mut connection, 2, MIGRATION_2).unwrap();
+        connection.execute_batch(
+            r#"
+            INSERT INTO feeds(stable_id,normalized_url,fetch_url,display_name,publisher_name,format,etag,last_modified,created_at,modified_at)
+            VALUES ('undated','https://undated.example/feed','https://undated.example/feed','Undated','Undated','rss','etag-a','date-a',1,1),
+                   ('dated','https://dated.example/feed','https://dated.example/feed','Dated','Dated','rss','etag-b','date-b',1,1);
+            INSERT INTO articles(stable_id,feed_stable_id,title,published_at,inserted_at,is_read,is_starred,retention_at,modified_at)
+            VALUES ('article-a','undated','Undated article',NULL,10,0,0,10,10),
+                   ('article-b','dated','Dated article',9,10,0,0,10,10);
+            "#,
+        ).unwrap();
+
+        migrate(&mut connection).unwrap();
+
+        let undated: (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT etag,last_modified FROM feeds WHERE stable_id='undated'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let dated: (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT etag,last_modified FROM feeds WHERE stable_id='dated'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(undated, (None, None));
+        assert_eq!(dated, (Some("etag-b".into()), Some("date-b".into())));
     }
 }

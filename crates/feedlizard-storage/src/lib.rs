@@ -486,16 +486,14 @@ impl Library {
             }
         }
         if let Some(cursor) = cursor {
-            where_sql.push_str(" AND ((a.published_at IS NULL AND a.updated_at IS NULL) > ? OR ((a.published_at IS NULL AND a.updated_at IS NULL)=? AND (COALESCE(a.published_at,a.updated_at,a.inserted_at) < ? OR (COALESCE(a.published_at,a.updated_at,a.inserted_at)=? AND a.stable_id < ?))))");
-            values.push(cursor.before_is_undated.into());
-            values.push(cursor.before_is_undated.into());
+            where_sql.push_str(" AND (COALESCE(a.published_at,a.updated_at,a.inserted_at) < ? OR (COALESCE(a.published_at,a.updated_at,a.inserted_at)=? AND a.stable_id < ?))");
             values.push(cursor.before_timestamp.into());
             values.push(cursor.before_timestamp.into());
             values.push(cursor.before_id.clone().into());
         }
         values.push(((limit + 1) as i64).into());
         let sql = format!(
-            "SELECT a.stable_id,a.feed_stable_id,f.display_name,a.url,a.title,a.summary,a.published_at,a.updated_at,a.image_url,a.is_read,a.is_starred,COALESCE(a.published_at,a.updated_at,a.inserted_at) FROM articles a JOIN feeds f ON f.stable_id=a.feed_stable_id{where_sql} ORDER BY (a.published_at IS NULL AND a.updated_at IS NULL),COALESCE(a.published_at,a.updated_at,a.inserted_at) DESC,a.stable_id DESC LIMIT ?"
+            "SELECT a.stable_id,a.feed_stable_id,f.display_name,a.url,a.title,a.summary,a.published_at,a.updated_at,a.image_url,a.is_read,a.is_starred,COALESCE(a.published_at,a.updated_at,a.inserted_at) FROM articles a JOIN feeds f ON f.stable_id=a.feed_stable_id{where_sql} ORDER BY COALESCE(a.published_at,a.updated_at,a.inserted_at) DESC,a.stable_id DESC LIMIT ?"
         );
         let mut statement = self.connection.prepare(&sql).map_err(sqlite)?;
         let mut items = statement
@@ -510,7 +508,6 @@ impl Library {
         let next = has_more
             .then(|| {
                 items.last().map(|item| PageCursor {
-                    before_is_undated: item.published_at.is_none() && item.updated_at.is_none(),
                     before_timestamp: item.sort_timestamp,
                     before_id: item.stable_id.clone(),
                 })
@@ -573,7 +570,7 @@ impl Library {
                 .map_err(sqlite)?;
             if exists {
                 stats.duplicates += 1;
-                transaction.execute("UPDATE feeds SET folder_id=COALESCE(?1,folder_id),site_url=COALESCE(?2,site_url),modified_at=?3 WHERE stable_id=?4",params![parent,feed.site_url,now,stable]).map_err(sqlite)?;
+                transaction.execute("UPDATE feeds SET folder_id=COALESCE(?1,folder_id),site_url=COALESCE(?2,site_url),fetch_url=?3,modified_at=?4 WHERE stable_id=?5",params![parent,feed.site_url,feed.feed_url,now,stable]).map_err(sqlite)?;
                 continue;
             }
             let display = feed.custom_title.as_deref().unwrap_or(&feed.title);

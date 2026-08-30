@@ -6,6 +6,7 @@ use crate::{
     worker::{Command, Event, OwnedScope, Worker},
 };
 use adw::prelude::*;
+use chrono::{Datelike, Timelike};
 use feedlizard_image::{Fit, Request as ImageRequest};
 use feedlizard_integration::{
     IntegrationAction, IntegrationHandle, start_service as start_integration_service,
@@ -421,9 +422,14 @@ fn build_view(
     reader.set_content(Some(&reader_mode_stack));
 
     let inner = adw::NavigationSplitView::new();
-    inner.set_min_sidebar_width(330.0);
-    inner.set_max_sidebar_width(540.0);
-    inner.set_sidebar_width_fraction(0.40);
+    // Keep article selection from moving the reader boundary. Wrapped reader
+    // content has article-dependent natural widths, so allowing this split to
+    // negotiate a width range caused the center pane to grow or shrink as the
+    // selected article changed. The adaptive breakpoint still collapses the
+    // split for narrow windows, while the reader absorbs deliberate window
+    // size changes on wider layouts.
+    inner.set_min_sidebar_width(450.0);
+    inner.set_max_sidebar_width(450.0);
     inner.set_sidebar(Some(&adw::NavigationPage::new(&articles, "Articles")));
     inner.set_content(Some(&adw::NavigationPage::new(&reader, "Reader")));
     let outer = adw::NavigationSplitView::new();
@@ -1809,7 +1815,6 @@ fn poll_network_events(view: &Rc<View>, events: Receiver<NetworkEvent>) {
                         if let Some(state) = view.article_row_states.borrow().get(&article_id)
                             && let Some(picture) = &state.thumbnail
                         {
-                            picture.set_opacity(1.0);
                             load_article_thumbnail(&view, picture, &image_url);
                         }
                     }
@@ -1954,7 +1959,11 @@ fn poll_image_events(view: &Rc<View>, events: Receiver<ImageEvent>) {
                     }
                 }
                 ImageEvent::Failed { request } => {
-                    view.image_targets.borrow_mut().remove(&request);
+                    if let Some(targets) = view.image_targets.borrow_mut().remove(&request) {
+                        for picture in targets {
+                            picture.set_opacity(0.0);
+                        }
+                    }
                     if let Some(targets) = view.reader_image_targets.borrow_mut().remove(&request) {
                         for picture in targets {
                             picture.set_visible(false);
@@ -2370,12 +2379,6 @@ fn article_row(view: &View, item: &ArticleListItem) -> gtk::ListBoxRow {
     let thumbnail = if item.thumbnail_url.is_some() || item.article_url.is_some() {
         let overlay = gtk::Overlay::new();
         overlay.set_size_request(96, 72);
-        overlay.set_child(Some(
-            &gtk::Image::builder()
-                .icon_name("image-x-generic-symbolic")
-                .css_classes(["article-image-fallback"])
-                .build(),
-        ));
         let picture = gtk::Picture::builder()
             .width_request(96)
             .height_request(72)
@@ -2385,11 +2388,10 @@ fn article_row(view: &View, item: &ArticleListItem) -> gtk::ListBoxRow {
             .valign(gtk::Align::Center)
             .content_fit(gtk::ContentFit::Cover)
             .can_shrink(true)
-            .opacity(if item.thumbnail_url.is_some() {
-                1.0
-            } else {
-                0.0
-            })
+            // GtkPicture renders a missing-image glyph before a paintable is
+            // available. Keep it transparent until decoding succeeds so an
+            // absent or broken publisher image does not look like an app error.
+            .opacity(0.0)
             .css_classes(["article-thumbnail", "image-placeholder"])
             .build();
         overlay.add_overlay(&picture);
@@ -3500,30 +3502,41 @@ fn scope_title(scope: &OwnedScope) -> &str {
         OwnedScope::Folder(_) => "Folder",
     }
 }
-fn relative_time(timestamp: Option<i64>) -> String {
-    timestamp
-        .map(|t| {
-            let days = (unix_now() - t).max(0) / 86_400;
-            match days {
-                0 => "Today".into(),
-                1 => "Yesterday".into(),
-                n if n < 7 => format!("{n} days ago"),
-                _ => format!("{days}d"),
-            }
-        })
-        .unwrap_or_else(|| "Unknown time".into())
-}
 fn article_time(published_at: Option<i64>, inserted_at: i64) -> String {
-    published_at.map_or_else(
-        || format!("Added {}", relative_time(Some(inserted_at)).to_lowercase()),
-        |published| relative_time(Some(published)),
-    )
+    let timestamp = published_at.unwrap_or(inserted_at);
+    let Some(time) = chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|value| value.with_timezone(&chrono::Local))
+    else {
+        return "Unknown time".into();
+    };
+    let formatted = format_article_datetime(time, chrono::Local::now());
+    if published_at.is_some() {
+        formatted
+    } else {
+        format!("Added {formatted}")
+    }
 }
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+
+fn format_article_datetime<Tz>(time: chrono::DateTime<Tz>, now: chrono::DateTime<Tz>) -> String
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    let date = if time.date_naive() == now.date_naive() {
+        "Today".to_owned()
+    } else if now.date_naive().pred_opt() == Some(time.date_naive()) {
+        "Yesterday".to_owned()
+    } else if time.date_naive().year() == now.date_naive().year() {
+        time.format("%b %-d").to_string()
+    } else {
+        time.format("%b %-d, %Y").to_string()
+    };
+    let hour = match time.hour() % 12 {
+        0 => 12,
+        hour => hour,
+    };
+    let period = if time.hour() < 12 { "AM" } else { "PM" };
+    format!("{date} · {hour}:{:02} {period}", time.minute())
 }
 fn strip_html(input: &str) -> String {
     let mut out = String::new();
@@ -3732,8 +3745,8 @@ fn install_css() {
 #[cfg(test)]
 mod tests {
     use super::{
-        book_navigation_target, book_progress_label, format_beta_version, format_snapshot_datetime,
-        site_favicon_url,
+        book_navigation_target, book_progress_label, format_article_datetime, format_beta_version,
+        format_snapshot_datetime, site_favicon_url,
     };
     use chrono::{FixedOffset, TimeZone};
 
@@ -3742,6 +3755,21 @@ mod tests {
         let eastern = FixedOffset::west_opt(4 * 60 * 60).unwrap();
         let time = eastern.timestamp_opt(1_777_000_000, 0).unwrap();
         assert_eq!(format_snapshot_datetime(time), "April 23, 2026 at 11:06 PM");
+    }
+
+    #[test]
+    fn article_time_includes_local_date_context_and_clock_time() {
+        let eastern = FixedOffset::west_opt(4 * 60 * 60).unwrap();
+        let now = eastern.with_ymd_and_hms(2026, 8, 30, 15, 0, 0).unwrap();
+        let today = eastern.with_ymd_and_hms(2026, 8, 30, 9, 30, 0).unwrap();
+        let yesterday = eastern.with_ymd_and_hms(2026, 8, 29, 21, 0, 0).unwrap();
+        let older = eastern.with_ymd_and_hms(2026, 8, 20, 16, 12, 0).unwrap();
+        assert_eq!(format_article_datetime(today, now), "Today · 9:30 AM");
+        assert_eq!(
+            format_article_datetime(yesterday, now),
+            "Yesterday · 9:00 PM"
+        );
+        assert_eq!(format_article_datetime(older, now), "Aug 20 · 4:12 PM");
     }
 
     #[test]

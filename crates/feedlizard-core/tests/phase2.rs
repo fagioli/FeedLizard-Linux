@@ -124,6 +124,16 @@ fn opml_round_trip_preserves_logical_library() {
 }
 
 #[test]
+fn opml_preserves_semantically_significant_feed_path_slashes() {
+    let source = r#"<opml version="2.0"><body><outline type="rss" text="Wire" xmlUrl="https://feed.example/rss/home/?rss=token#ignored"/></body></opml>"#;
+    let library = opml::import(source).unwrap();
+    assert_eq!(
+        library.feeds[0].feed_url,
+        "https://feed.example/rss/home/?rss=token"
+    );
+}
+
+#[test]
 fn retention_and_local_state_transitions_match_policy() {
     let now = 2_000_000_000;
     assert!(!should_expire(

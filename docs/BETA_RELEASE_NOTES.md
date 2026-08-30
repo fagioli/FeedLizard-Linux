@@ -5,14 +5,14 @@ that does not work as expected.
 
 - Native GTK4/libadwaita RSS, Atom, and JSON Feed reader.
 - Local-first library, offline search, Scroll, and Pages reading modes.
-- Improved article dates, feed discovery, Reader extraction, image handling,
-  navigation responsiveness, and contextual feed/article actions.
-- Added bounded favicon failure backoff so blocked or broken publishers do not
-  cause repeated image requests during a session.
-- Added an optional compact Omarchy companion with shared FeedLizard data,
-  keyboard controls, unread activity visualization, preview, and refresh.
-- Added explicit `--omarchy` launch support and documented the confirmed
-  Omarchy plugin installation workflow without weakening the Flatpak sandbox.
+- Improved article date recovery, local-time presentation, and deterministic
+  chronological ordering when publishers omit or change date fields.
+- Preserved publisher URL path semantics during OPML import, including feeds
+  whose query endpoints require a trailing slash.
+- Stabilized the three-pane reader layout and removed misleading broken-image
+  placeholders when an article has no usable image.
+- Improved the compact Omarchy companion with shared FeedLizard data,
+  five-minute refresh, simultaneous full-app launching, and clearer timestamps.
 - Architecture-specific Flatpak bundles for x86-64 and aarch64.
 
 ## Known validation limits

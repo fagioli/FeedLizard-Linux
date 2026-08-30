@@ -199,7 +199,7 @@ fn read_and_star_are_independent_and_mark_all_is_set_based() {
 }
 
 #[test]
-fn article_order_uses_updated_time_and_paginates_undated_items_last() {
+fn article_order_uses_best_available_time_for_all_items() {
     let path = DatabasePath::new("date-order");
     let mut library = Library::open(&path).unwrap();
     let document = r#"{
@@ -218,15 +218,15 @@ fn article_order_uses_updated_time_and_paginates_undated_items_last() {
     let first = library
         .article_page(ArticleScope::Library, 1, None)
         .unwrap();
-    assert_eq!(first.items[0].title, "Updated");
+    assert_eq!(first.items[0].title, "Undated");
     let second = library
         .article_page(ArticleScope::Library, 1, first.next.as_ref())
         .unwrap();
-    assert_eq!(second.items[0].title, "Published");
+    assert_eq!(second.items[0].title, "Updated");
     let third = library
         .article_page(ArticleScope::Library, 1, second.next.as_ref())
         .unwrap();
-    assert_eq!(third.items[0].title, "Undated");
+    assert_eq!(third.items[0].title, "Published");
 }
 
 #[test]
@@ -337,6 +337,31 @@ fn opml_import_export_and_repeat_are_transactional_and_equivalent() {
             .is_ok()
     );
     assert_eq!(library.stats().unwrap(), before);
+}
+
+#[test]
+fn repeated_opml_import_repairs_fetch_url_without_duplicating_subscription() {
+    let path = DatabasePath::new("opml-fetch-url");
+    let mut library = Library::open(&path).unwrap();
+    library
+        .add_subscription(
+            "https://feed.example/rss/home?rss=token",
+            "Wire",
+            FeedFormat::Rss,
+            None,
+            100,
+        )
+        .unwrap();
+    let opml = r#"<opml version="2.0"><body><outline type="rss" text="Wire" xmlUrl="https://feed.example/rss/home/?rss=token"/></body></opml>"#;
+
+    let result = library.import_opml(opml, 200).unwrap();
+    assert_eq!((result.feeds_added, result.duplicates), (0, 1));
+    let feeds = library.list_feeds().unwrap();
+    assert_eq!(feeds.len(), 1);
+    assert_eq!(
+        feeds[0].fetch_url,
+        "https://feed.example/rss/home/?rss=token"
+    );
 }
 
 #[test]

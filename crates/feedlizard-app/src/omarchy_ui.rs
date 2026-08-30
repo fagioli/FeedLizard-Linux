@@ -13,6 +13,8 @@ use std::{
     sync::mpsc::Receiver,
 };
 
+const AUTO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 const PURPLE: &str = "#9b7cff";
 const MAX_SIGNAL_ROWS: usize = 40;
 
@@ -47,6 +49,7 @@ struct View {
     scope_generation: Rc<Cell<u64>>,
     scope_levels: Rc<RefCell<Vec<f64>>>,
     scope: gtk::DrawingArea,
+    refresh_in_progress: Cell<bool>,
     worker: Worker,
     network: NetworkWorker,
     articles: RefCell<Vec<ArticleListItem>>,
@@ -78,6 +81,7 @@ pub fn build_window(application: &adw::Application) {
     let (network, network_events) = NetworkWorker::start(path);
     let view = Rc::new(build_view(application, worker, network));
     connect_view(&view);
+    schedule_auto_refresh(&view);
     poll_storage(&view, events);
     poll_network(&view, network_events);
     let keepalive = view.clone();
@@ -284,6 +288,7 @@ fn build_view(application: &adw::Application, worker: Worker, network: NetworkWo
         scope_generation,
         scope_levels,
         scope,
+        refresh_in_progress: Cell::new(false),
         worker,
         network,
         articles: RefCell::new(Vec::new()),
@@ -292,10 +297,9 @@ fn build_view(application: &adw::Application, worker: Worker, network: NetworkWo
 
     let content_stack = view.content_stack.clone();
     preview_back.connect_clicked(move |_| content_stack.set_visible_child_name("signals"));
-    let window = view.window.clone();
     let launch_status = view.status.clone();
     open_full.connect_clicked(move |_| match launch_full_application() {
-        Ok(()) => window.close(),
+        Ok(()) => launch_status.set_text("OPENING FEEDLIZARD…"),
         Err(error) => launch_status.set_text(&format!("LAUNCH FAILED // {}", concise(&error, 48))),
     });
     view
@@ -536,6 +540,7 @@ fn poll_network(view: &Rc<View>, events: Receiver<NetworkEvent>) {
                 for event in events.try_iter().take(32) {
                     match event {
                         NetworkEvent::RefreshComplete(summary) => {
+                            view.refresh_in_progress.set(false);
                             let state = if summary.failed == 0 {
                                 "SYNCED"
                             } else {
@@ -566,6 +571,7 @@ fn poll_network(view: &Rc<View>, events: Receiver<NetworkEvent>) {
                             view.worker.send(Command::LoadArticles(OwnedScope::Unread));
                         }
                         NetworkEvent::Error(error) => {
+                            view.refresh_in_progress.set(false);
                             set_sync(&view, "ERROR", "FETCH FAILED", ScopeState::Interrupted);
                             view.status
                                 .set_text(&format!("FETCH FAILED // {}", concise(&error, 58)));
@@ -636,20 +642,52 @@ fn open_original(view: &Rc<View>) {
 
 fn launch_full_application() -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    match spawn_full_application(&executable) {
+        Ok(()) => Ok(()),
+        Err(primary) if executable.as_os_str() != "/proc/self/exe" => {
+            spawn_full_application(std::path::Path::new("/proc/self/exe")).map_err(|fallback| {
+                format!("{primary}; live executable fallback failed: {fallback}")
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn spawn_full_application(executable: &std::path::Path) -> Result<(), std::io::Error> {
     std::process::Command::new(executable)
+        .arg("--standard")
+        .env_remove("FEEDLIZARD_OMARCHY")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
-        .map_err(|error| error.to_string())
 }
 
 fn refresh(view: &Rc<View>) {
+    if view.refresh_in_progress.replace(true) {
+        return;
+    }
     let detail = format!("{} FEEDS", view.feed_count.text());
     set_sync(view, "REFRESHING", &detail, ScopeState::Scanning);
     view.status.set_text("REFRESHING…");
     view.network.send(NetworkCommand::RefreshAll);
+}
+
+fn schedule_auto_refresh(view: &Rc<View>) {
+    glib::timeout_add_local(
+        AUTO_REFRESH_INTERVAL,
+        glib::clone!(
+            #[weak]
+            view,
+            #[upgrade_or]
+            glib::ControlFlow::Break,
+            move || {
+                refresh(&view);
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
 }
 
 fn set_sync(view: &View, value: &str, detail: &str, state: ScopeState) {

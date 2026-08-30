@@ -11,19 +11,21 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 const APPLICATION_ID: &str = "io.github.feedlizard.FeedLizard";
+const OMARCHY_APPLICATION_ID: &str = "io.github.feedlizard.FeedLizard.Omarchy";
+
+fn application_id(mode: runtime_mode::RuntimeMode) -> &'static str {
+    match mode {
+        runtime_mode::RuntimeMode::Standard => APPLICATION_ID,
+        runtime_mode::RuntimeMode::Omarchy => OMARCHY_APPLICATION_ID,
+    }
+}
 
 fn main() -> glib::ExitCode {
     let launch = runtime_mode::Launch::from_process();
     adw::init().expect("libadwaita initialization failed");
-    let flags = match launch.mode {
-        runtime_mode::RuntimeMode::Standard => gio::ApplicationFlags::HANDLES_OPEN,
-        runtime_mode::RuntimeMode::Omarchy => {
-            gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE
-        }
-    };
     let application = adw::Application::builder()
-        .application_id(APPLICATION_ID)
-        .flags(flags)
+        .application_id(application_id(launch.mode))
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
     match launch.mode {
         runtime_mode::RuntimeMode::Standard => {
@@ -36,4 +38,22 @@ fn main() -> glib::ExitCode {
         }
     };
     application.run_with_args(&launch.gtk_args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn companion_and_standard_have_distinct_runtime_identities() {
+        assert_eq!(
+            application_id(runtime_mode::RuntimeMode::Standard),
+            APPLICATION_ID
+        );
+        assert_eq!(
+            application_id(runtime_mode::RuntimeMode::Omarchy),
+            OMARCHY_APPLICATION_ID
+        );
+        assert_ne!(APPLICATION_ID, OMARCHY_APPLICATION_ID);
+    }
 }
