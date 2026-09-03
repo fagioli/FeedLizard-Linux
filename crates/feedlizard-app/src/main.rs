@@ -1,3 +1,4 @@
+mod discover_feeds;
 mod image_worker;
 mod network_worker;
 mod nostr_worker;

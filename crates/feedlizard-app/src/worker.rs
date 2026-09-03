@@ -55,6 +55,7 @@ pub enum Event {
     Navigation {
         feeds: Vec<FeedRecord>,
         folders: Vec<FolderRecord>,
+        unread_by_feed: Vec<(String, i64)>,
         stats: LibraryStats,
     },
     Articles {
@@ -134,6 +135,9 @@ fn handle(library: &mut Library, command: Command) -> Result<Event, String> {
         Command::LoadNavigation => Ok(Event::Navigation {
             feeds: library.list_feeds().map_err(|error| error.to_string())?,
             folders: library.list_folders().map_err(|error| error.to_string())?,
+            unread_by_feed: library
+                .unread_counts_by_feed()
+                .map_err(|error| error.to_string())?,
             stats: library.stats().map_err(|error| error.to_string())?,
         }),
         Command::LoadArticles(scope) => {

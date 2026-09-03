@@ -11,6 +11,7 @@ use std::{
 #[derive(Debug)]
 pub enum Command {
     AddFeed(String),
+    AddDiscoveredFeeds(Vec<(String, String)>),
     RefreshFeed(String),
     RefreshAll,
     DiscoverArticleImages(Vec<(String, String)>),
@@ -25,6 +26,11 @@ pub enum Event {
         articles: usize,
     },
     DiscoveryCandidates(Vec<(String, Option<String>)>),
+    DiscoveredFeedsAdded {
+        added: usize,
+        articles: usize,
+        failures: Vec<String>,
+    },
     FeedRefreshed {
         inserted: usize,
         failed: bool,
@@ -112,6 +118,26 @@ fn run(database_path: PathBuf, commands: Receiver<Command>, events: Sender<Event
                             .collect(),
                     ),
                     Err(error) => Event::Error(error.to_string()),
+                }
+            }
+            Command::AddDiscoveredFeeds(entries) => {
+                let mut added = 0;
+                let mut articles = 0;
+                let mut failures = Vec::new();
+                for (name, url) in entries {
+                    match runtime.block_on(coordinator.add_url(&mut library, &url, &token)) {
+                        Ok(AddFeedResult::Added { ingest, .. }) => {
+                            added += 1;
+                            articles += ingest.inserted;
+                        }
+                        Ok(AddFeedResult::Candidates(_)) => failures.push(name),
+                        Err(_) => failures.push(name),
+                    }
+                }
+                Event::DiscoveredFeedsAdded {
+                    added,
+                    articles,
+                    failures,
                 }
             }
             Command::RefreshFeed(feed_id) => {

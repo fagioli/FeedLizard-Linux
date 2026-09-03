@@ -11,13 +11,14 @@ Omarchy plugin source lives at [`integrations/omarchy`](integrations/omarchy);
 it is never installed or enabled silently and is not required on other
 distributions.
 
-> **Beta software:** FeedLizard Linux is currently in the 0.9 beta series.
-> Expect bugs and report behavior that does not work as expected. Version 1.0
-> will be the first stable release.
+> **Release candidate:** FeedLizard Linux is approaching its 1.0 release.
+> Please report behavior that does not work as expected before the stable
+> release.
 
 The graphical application is a 1.0 release-candidate work in progress. Its adaptive
 three-pane interface, feed management, refresh, offline search, bounded image
-pipeline, Scroll reader, and native Pages prototype are implemented. Human
+pipeline, release-bundled feed discovery, Scroll reader, and native Pages
+prototype are implemented. Human
 usability, accessibility, and release review are still required
 before production use. Fedora aarch64 is the current native development and
 runtime-validation platform. The source and CI target both aarch64 and x86-64;
@@ -197,7 +198,7 @@ Official builds may configure one at compile time with
 
 ## Flatpak
 
-Beta releases will provide two installation paths:
+Prereleases provide two installation paths:
 
 - architecture-specific standalone `.flatpak` bundles attached to an intentional
   prerelease on GitHub;

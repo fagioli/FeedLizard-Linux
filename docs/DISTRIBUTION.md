@@ -1,27 +1,26 @@
 # FeedLizard Linux distribution
 
 FeedLizard Linux uses GitHub for source, CI, prerelease artifacts, and release
-coordination. Every public release below 1.0 is beta software. Version 1.0 is
-the first stable release.
+coordination. Public builds remain prerelease software until Version 1.0.
 
 ## Version and release gate
 
 The application version is the workspace package version in the root
 `Cargo.toml`. The graphical application inherits it, About formats a SemVer
-`-beta.N` suffix as `Beta N`, AppStream carries the same machine version, tags
+`-beta.N` and `-rc.N` suffixes as `Beta N` and `RC N`, AppStream carries the same machine version, tags
 are `vVERSION`, and release filenames derive from that tag. The
 `scripts/release-version.sh` gate rejects a mismatched tag or AppStream entry.
 
 Normal pushes and pull requests run formatting, tests, Clippy, release builds,
 dependency policy, and Flatpak manifest validation. Only a deliberate tag that
-matches `v0.*-beta.*` invokes the beta release workflow. GitHub Releases created
+matches `v0.*-beta.*` or `v1.*-rc.*` invokes the prerelease workflow. GitHub Releases created
 by that workflow are prereleases and contain architecture-specific bundles plus
 `SHA256SUMS` generated from those exact bundles.
 
 ## Application identity and channel
 
 All releases use application ID `io.github.feedlizard.FeedLizard` and Flatpak
-branch `release`. Beta status lives in the SemVer/AppStream/GitHub release
+branch `release`. Prerelease status lives in the SemVer/AppStream/GitHub release
 metadata rather than a second application ID or sandbox. The same ID and branch
 continue at 1.0, so Flatpak updates preserve the SQLite database, settings,
 cache, and Secret Service association. There is no FeedLizard self-updater.

@@ -385,6 +385,25 @@ impl Library {
         }
     }
 
+    pub fn unread_counts_by_feed(&self) -> Result<Vec<(String, i64)>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT feeds.stable_id, count(articles.stable_id)
+                 FROM feeds
+                 LEFT JOIN articles
+                   ON articles.feed_stable_id=feeds.stable_id AND articles.is_read=0
+                 GROUP BY feeds.stable_id
+                 ORDER BY feeds.stable_id",
+            )
+            .map_err(sqlite)?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(sqlite)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite)
+    }
+
     pub fn unread_folder_summary(
         &self,
         limit: usize,

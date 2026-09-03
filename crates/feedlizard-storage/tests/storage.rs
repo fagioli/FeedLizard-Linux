@@ -199,6 +199,29 @@ fn read_and_star_are_independent_and_mark_all_is_set_based() {
 }
 
 #[test]
+fn unread_counts_by_feed_include_zero_count_subscriptions() {
+    let path = DatabasePath::new("feed-unread-counts");
+    let mut library = Library::open(&path).unwrap();
+    library
+        .ingest_document("https://json.example/feed.json", JSON, 100)
+        .unwrap();
+    let empty_feed = library
+        .add_subscription(
+            "https://empty.example/feed.xml",
+            "Empty",
+            FeedFormat::Rss,
+            None,
+            101,
+        )
+        .unwrap();
+
+    let counts = library.unread_counts_by_feed().unwrap();
+    assert_eq!(counts.len(), 2);
+    assert!(counts.contains(&(feed_id("https://json.example/feed.json"), 1)));
+    assert!(counts.contains(&(empty_feed, 0)));
+}
+
+#[test]
 fn article_order_uses_best_available_time_for_all_items() {
     let path = DatabasePath::new("date-order");
     let mut library = Library::open(&path).unwrap();

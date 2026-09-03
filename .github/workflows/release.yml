@@ -1,9 +1,10 @@
-name: Beta release
+name: Prerelease
 
 on:
   push:
     tags:
       - "v0.*-beta.*"
+      - "v1.*-rc.*"
 
 permissions:
   contents: read
@@ -19,7 +20,7 @@ jobs:
       - id: version
         run: |
           version="$(scripts/release-version.sh)"
-          display_version="$(printf '%s' "$version" | sed -E 's/-beta\.([0-9]+)$/ Beta \1/')"
+          display_version="$(printf '%s' "$version" | sed -E -e 's/-beta\.([0-9]+)$/ Beta \1/' -e 's/-rc\.([0-9]+)$/ RC \1/')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "display-version=$display_version" >> "$GITHUB_OUTPUT"
 

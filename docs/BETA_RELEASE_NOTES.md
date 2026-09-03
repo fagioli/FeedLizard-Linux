@@ -1,18 +1,12 @@
-FeedLizard Linux is currently in beta. Please expect bugs and report anything
-that does not work as expected.
+FeedLizard Linux 1.0 RC 1 is a release candidate. Please report anything that
+does not work as expected before the stable 1.0 release.
 
 ## Highlights
 
 - Native GTK4/libadwaita RSS, Atom, and JSON Feed reader.
+- Curated Discover Feeds directory with multi-feed selection.
+- Per-feed unread counts in the library sidebar.
 - Local-first library, offline search, Scroll, and Pages reading modes.
-- Improved article date recovery, local-time presentation, and deterministic
-  chronological ordering when publishers omit or change date fields.
-- Preserved publisher URL path semantics during OPML import, including feeds
-  whose query endpoints require a trailing slash.
-- Stabilized the three-pane reader layout and removed misleading broken-image
-  placeholders when an article has no usable image.
-- Improved the compact Omarchy companion with shared FeedLizard data,
-  five-minute refresh, simultaneous full-app launching, and clearer timestamps.
 - Architecture-specific Flatpak bundles for x86-64 and aarch64.
 
 ## Known validation limits

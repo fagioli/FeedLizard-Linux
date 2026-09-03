@@ -7,7 +7,7 @@ if [[ -z "$workspace_version" ]]; then
   exit 1
 fi
 
-if [[ "$workspace_version" != 0.9.0-beta.* && "$workspace_version" != 0.*-beta.* && "$workspace_version" != 1.* ]]; then
+if [[ "$workspace_version" != 0.*-beta.* && "$workspace_version" != 1.*-rc.* && "$workspace_version" != 1.* ]]; then
   echo "unsupported release version: $workspace_version" >&2
   exit 1
 fi

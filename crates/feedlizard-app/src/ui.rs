@@ -1,4 +1,5 @@
 use crate::{
+    discover_feeds,
     image_worker::{Event as ImageEvent, ImageWorker},
     network_worker::{Command as NetworkCommand, Event as NetworkEvent, NetworkWorker},
     nostr_worker::{Command as NostrCommand, Event as NostrEvent, NostrWorker, SnapshotSummary},
@@ -1087,12 +1088,14 @@ fn show_add_feed(view: &Rc<View>) {
         .activates_default(true)
         .build();
     let cancel = gtk::Button::with_label("Cancel");
+    let discover = gtk::Button::with_label("Discover Feeds");
     let add = gtk::Button::builder()
         .label("Add Feed")
         .css_classes(["suggested-action"])
         .build();
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
+    actions.append(&discover);
     actions.append(&cancel);
     actions.append(&add);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
@@ -1129,6 +1132,14 @@ fn show_add_feed(view: &Rc<View>) {
     let dialog_for_cancel = dialog.clone();
     cancel.connect_clicked(move |_| dialog_for_cancel.close());
     let weak = Rc::downgrade(view);
+    let dialog_for_discover = dialog.clone();
+    discover.connect_clicked(move |_| {
+        dialog_for_discover.close();
+        if let Some(view) = weak.upgrade() {
+            show_discover_feeds(&view);
+        }
+    });
+    let weak = Rc::downgrade(view);
     let dialog_for_add = dialog.clone();
     add.connect_clicked(move |_| {
         let url = entry.text().trim().to_owned();
@@ -1139,6 +1150,152 @@ fn show_add_feed(view: &Rc<View>) {
             }
             dialog_for_add.close();
         }
+    });
+    dialog.present();
+}
+
+fn show_discover_feeds(view: &Rc<View>) {
+    let subscribed = discover_feeds::subscribed_ids(&view.feeds.borrow());
+    let selections = Rc::new(RefCell::new(
+        Vec::<(discover_feeds::Entry, gtk::CheckButton)>::new(),
+    ));
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::None);
+    list.add_css_class("boxed-list");
+
+    for category in discover_feeds::CATEGORIES {
+        let heading = gtk::ListBoxRow::new();
+        heading.set_activatable(false);
+        heading.set_selectable(false);
+        heading.set_child(Some(
+            &gtk::Label::builder()
+                .label(category)
+                .xalign(0.0)
+                .css_classes(["heading"])
+                .margin_top(14)
+                .margin_bottom(6)
+                .margin_start(12)
+                .margin_end(12)
+                .build(),
+        ));
+        list.append(&heading);
+        for entry in discover_feeds::ENTRIES
+            .iter()
+            .filter(|entry| entry.category == category)
+        {
+            let already_subscribed = discover_feeds::is_subscribed(entry, &subscribed);
+            let check = gtk::CheckButton::builder()
+                .label(entry.name)
+                .sensitive(!already_subscribed)
+                .tooltip_text(entry.website_url)
+                .build();
+            let status = gtk::Label::builder()
+                .label(if already_subscribed { "Subscribed" } else { "" })
+                .css_classes(["dim-label"])
+                .build();
+            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            row_box.set_margin_top(10);
+            row_box.set_margin_bottom(10);
+            row_box.set_margin_start(12);
+            row_box.set_margin_end(12);
+            row_box.append(&check);
+            status.set_hexpand(true);
+            status.set_halign(gtk::Align::End);
+            row_box.append(&status);
+            let row = gtk::ListBoxRow::new();
+            row.set_activatable(!already_subscribed);
+            row.set_child(Some(&row_box));
+            let check_for_row = check.clone();
+            row.connect_activate(move |_| check_for_row.set_active(!check_for_row.is_active()));
+            list.append(&row);
+            selections.borrow_mut().push((*entry, check));
+        }
+    }
+
+    let cancel = gtk::Button::with_label("Cancel");
+    let add = gtk::Button::builder()
+        .label("Add Selected Feeds")
+        .css_classes(["suggested-action"])
+        .sensitive(false)
+        .build();
+    for (_, check) in selections.borrow().iter() {
+        let add = add.clone();
+        let selections = Rc::clone(&selections);
+        check.connect_toggled(move |_| {
+            let count = selections
+                .borrow()
+                .iter()
+                .filter(|(_, check)| check.is_active())
+                .count();
+            add.set_sensitive(count > 0);
+            add.set_label(&format!(
+                "Add {count} {}",
+                if count == 1 { "Feed" } else { "Feeds" }
+            ));
+        });
+    }
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    actions.append(&cancel);
+    actions.append(&add);
+    let intro = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    intro.append(
+        &gtk::Label::builder()
+            .label("Start with some great feeds")
+            .xalign(0.0)
+            .css_classes(["title-2"])
+            .build(),
+    );
+    intro.append(
+        &gtk::Label::builder()
+            .label("Choose any feeds you’d like to follow. You can add or remove feeds anytime.")
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    content.set_margin_top(20);
+    content.set_margin_bottom(20);
+    content.set_margin_start(20);
+    content.set_margin_end(20);
+    content.append(&intro);
+    let scroller = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .child(&list)
+        .build();
+    content.append(&scroller);
+    content.append(&actions);
+    let dialog = gtk::Window::builder()
+        .title("Discover Feeds")
+        .transient_for(&view.window)
+        .modal(true)
+        .default_width(560)
+        .default_height(720)
+        .child(&content)
+        .build();
+    let closing = dialog.clone();
+    cancel.connect_clicked(move |_| closing.close());
+    let weak = Rc::downgrade(view);
+    let closing = dialog.clone();
+    add.connect_clicked(move |button| {
+        let selected = selections
+            .borrow()
+            .iter()
+            .filter(|(_, check)| check.is_active())
+            .map(|(entry, _)| (entry.name.to_owned(), entry.feed_url.to_owned()))
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return;
+        }
+        button.set_sensitive(false);
+        if let Some(view) = weak.upgrade() {
+            view.network
+                .send(NetworkCommand::AddDiscoveredFeeds(selected));
+            view.toast
+                .add_toast(adw::Toast::new("Adding selected feeds…"));
+        }
+        closing.close();
     });
     dialog.present();
 }
@@ -1364,7 +1521,7 @@ fn show_settings(view: &Rc<View>) {
     about.add(
         &adw::ActionRow::builder()
             .title("Version")
-            .subtitle(format_beta_version(env!("CARGO_PKG_VERSION")))
+            .subtitle(format_display_version(env!("CARGO_PKG_VERSION")))
             .build(),
     );
     about.add(
@@ -1396,9 +1553,11 @@ fn show_settings(view: &Rc<View>) {
     dialog.present(Some(&view.window));
 }
 
-fn format_beta_version(version: &str) -> String {
+fn format_display_version(version: &str) -> String {
     if let Some((base, beta)) = version.split_once("-beta.") {
         format!("{base} Beta {beta}")
+    } else if let Some((base, rc)) = version.split_once("-rc.") {
+        format!("{base} RC {rc}")
     } else {
         version.to_owned()
     }
@@ -1777,6 +1936,24 @@ fn poll_network_events(view: &Rc<View>, events: Receiver<NetworkEvent>) {
                         show_discovery_candidates(&view, candidates);
                     }
                 }
+                NetworkEvent::DiscoveredFeedsAdded {
+                    added,
+                    articles,
+                    failures,
+                } => {
+                    let mut message = format!(
+                        "Added {added} {} with {articles} {}",
+                        if added == 1 { "feed" } else { "feeds" },
+                        if articles == 1 { "article" } else { "articles" }
+                    );
+                    if !failures.is_empty() {
+                        message.push_str(&format!("; couldn’t add {}", failures.join(", ")));
+                    }
+                    view.toast.add_toast(adw::Toast::new(&message));
+                    view.worker.send(Command::LoadNavigation);
+                    view.worker
+                        .send(Command::LoadArticles(view.scope.borrow().clone()));
+                }
                 NetworkEvent::FeedRefreshed { inserted, failed } => {
                     let message = if failed {
                         "Feed refresh failed; existing articles were preserved".to_owned()
@@ -2051,6 +2228,7 @@ fn apply_event(view: &View, event: Event) {
         Event::Navigation {
             feeds,
             folders,
+            unread_by_feed,
             stats,
         } => {
             if let Some(integration) = &view.integration {
@@ -2103,8 +2281,10 @@ fn apply_event(view: &View, event: Event) {
                 view.network
                     .send(NetworkCommand::DiscoverFavicons(favicon_candidates));
             }
+            let unread_by_feed = unread_by_feed.into_iter().collect::<HashMap<_, _>>();
             for feed in feeds {
-                let row = feed_navigation_row(view, &feed);
+                let unread = unread_by_feed.get(&feed.stable_id).copied().unwrap_or(0);
+                let row = feed_navigation_row(view, &feed, unread);
                 install_feed_drag(&row, &feed.stable_id);
                 view.feed_list.append(&row);
             }
@@ -3197,12 +3377,12 @@ fn navigation_row(icon: &str, title: &str, tag: &str, count: Option<i64>) -> gtk
     row
 }
 
-fn feed_navigation_row(view: &View, feed: &FeedRecord) -> gtk::ListBoxRow {
+fn feed_navigation_row(view: &View, feed: &FeedRecord, unread: i64) -> gtk::ListBoxRow {
     let row = navigation_row(
         "application-rss+xml-symbolic",
         &feed.display_name,
         &format!("feed:{}", feed.stable_id),
-        None,
+        Some(unread),
     );
     install_feed_context_menu(view, &row, feed);
     let Some(icon_url) = feed_icon_url(feed) else {
@@ -3745,8 +3925,8 @@ fn install_css() {
 #[cfg(test)]
 mod tests {
     use super::{
-        book_navigation_target, book_progress_label, format_article_datetime, format_beta_version,
-        format_snapshot_datetime, site_favicon_url,
+        book_navigation_target, book_progress_label, format_article_datetime,
+        format_display_version, format_snapshot_datetime, site_favicon_url,
     };
     use chrono::{FixedOffset, TimeZone};
 
@@ -3801,8 +3981,9 @@ mod tests {
     }
 
     #[test]
-    fn formats_semver_beta_for_about_without_changing_stable_versions() {
-        assert_eq!(format_beta_version("0.9.0-beta.12"), "0.9.0 Beta 12");
-        assert_eq!(format_beta_version("1.0.0"), "1.0.0");
+    fn formats_prerelease_versions_for_about_without_changing_stable_versions() {
+        assert_eq!(format_display_version("0.9.0-beta.12"), "0.9.0 Beta 12");
+        assert_eq!(format_display_version("1.0.0-rc.1"), "1.0.0 RC 1");
+        assert_eq!(format_display_version("1.0.0"), "1.0.0");
     }
 }
